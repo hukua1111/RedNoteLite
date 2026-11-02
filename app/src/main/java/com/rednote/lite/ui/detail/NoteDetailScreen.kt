@@ -1,5 +1,6 @@
 package com.rednote.lite.ui.detail
 
+import android.view.TextureView
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -8,11 +9,14 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -43,6 +47,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,9 +71,9 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.common.Tracks
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.PlayerView
 import coil3.compose.AsyncImage
 import com.rednote.lite.data.model.Comment
 import com.rednote.lite.data.model.NoteDetailCard
@@ -373,8 +378,8 @@ private fun VideoPlayer(url: String) {
     var boosting by remember { mutableStateOf(false) }
     var askDownload by remember { mutableStateOf(false) }
 
-    // PlayerView 的引用留着，onDispose 时先解绑再释放（见下面的注释）
-    var playerView by remember { mutableStateOf<PlayerView?>(null) }
+    // 视频宽高比（宽/高），用来在黑底里按比例居中，不拉伸
+    var videoAspect by remember { mutableFloatStateOf(0f) }
 
     val player = remember(url) {
         ExoPlayer.Builder(context).build().apply {
@@ -407,6 +412,12 @@ private fun VideoPlayer(url: String) {
                 }
             }
 
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (videoSize.height > 0 && videoSize.width > 0) {
+                    videoAspect = videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height
+                }
+            }
+
             /**
              * 解析出的音轨数量。
              *
@@ -436,16 +447,13 @@ private fun VideoPlayer(url: String) {
         player.addListener(listener)
         onDispose {
             player.removeListener(listener)
-            // 退出详情页时，SurfaceView 会把自己那一层留在窗口上，
-            // 只 release 播放器的话最后一帧还能挂好几秒（看起来像画中画）。
-            // 顺序很重要：先解绑 PlayerView，再 stop + clearVideoSurface，最后 release。
+            // 退出详情页：先把画面从 TextureView 上摘掉，再停、再释放。
+            // 顺序反了的话，player 可能还持有上一次的帧缓冲。
             runCatching {
-                playerView?.player = null
                 player.stop()
                 player.clearVideoSurface()
             }
             player.release()
-            playerView = null
         }
     }
 
@@ -488,15 +496,23 @@ private fun VideoPlayer(url: String) {
     val trackHeight by animateDpAsState(if (dragging) 6.dp else 2.5.dp, label = "trackHeight")
     val thumbRadius by animateDpAsState(if (dragging) 6.dp else 3.dp, label = "thumbRadius")
 
-    Box(Modifier.fillMaxWidth().height(420.dp).background(Color.Black)) {
+    BoxWithConstraints(Modifier.fillMaxWidth().height(420.dp).background(Color.Black)) {
+        // 按视频比例铺满：宽视频贴满宽度，竖视频贴满高度，都居中，不拉伸
+        val containerAspect = if (maxHeight.value > 0f) maxWidth.value / maxHeight.value else 1f
+        val videoModifier = when {
+            videoAspect <= 0f -> Modifier.fillMaxSize()
+            videoAspect >= containerAspect -> Modifier.fillMaxWidth().aspectRatio(videoAspect)
+            else -> Modifier.fillMaxHeight().aspectRatio(videoAspect)
+        }
+
+        // 用 TextureView 而不是 PlayerView(SurfaceView)：
+        // SurfaceView 在窗口里独占一层，退出页面后那一层不会立刻消失，
+        // 最后一帧就会像画中画一样挂在界面上几秒。
+        // TextureView 是普通 View，跟着视图树一起消失，不会有这个问题。
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
+            modifier = videoModifier.align(Alignment.Center),
             factory = { ctx ->
-                PlayerView(ctx).apply {
-                    useController = false
-                    this.player = player
-                    playerView = this
-                }
+                TextureView(ctx).also { view -> player.setVideoTextureView(view) }
             },
         )
 
