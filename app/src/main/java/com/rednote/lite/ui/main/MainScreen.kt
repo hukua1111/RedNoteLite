@@ -160,7 +160,7 @@ fun MainScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "筛选中 · ${visible.size}/${vm.items.size} 条",
+                        "已屏蔽 ${vm.items.size - visible.size} 条 · 剩余 ${visible.size}",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
@@ -193,7 +193,7 @@ fun MainScreen(
                                     StatusBlock(
                                         error = vm.error,
                                         emptyText = if (vm.filter.active) {
-                                            "没有符合筛选条件的笔记"
+                                            "笔记都被筛选条件隐藏了"
                                         } else {
                                             "暂无内容"
                                         },
@@ -279,20 +279,20 @@ private fun FilterDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("筛选笔记") },
+        title = { Text("筛选（隐藏不想要的）") },
         text = {
             Column {
                 OutlinedTextField(
                     value = keyword,
                     onValueChange = { keyword = it },
-                    label = { Text("关键词（标题/正文）") },
+                    label = { Text("关键词（标题/正文命中则隐藏）") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
                     value = likes,
                     onValueChange = { input -> likes = input.filter { it.isDigit() } },
-                    label = { Text("最低点赞数") },
+                    label = { Text("点赞少于 N 则隐藏") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
@@ -300,13 +300,14 @@ private fun FilterDialog(
                 OutlinedTextField(
                     value = comments,
                     onValueChange = { input -> comments = input.filter { it.isDigit() } },
-                    label = { Text("最低评论数") },
+                    label = { Text("评论少于 N 则隐藏") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
                 Text(
-                    "只对已加载的笔记生效，不会重新请求",
+                    "三个条件是「或」：命中任意一条就隐藏。只对已加载的笔记生效，" +
+                        "不重新请求；首页接口没有返回评论数时该条不参与判断。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp),

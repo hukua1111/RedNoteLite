@@ -80,20 +80,34 @@ class MainViewModel : ViewModel() {
         filter = value
     }
 
-    /** 实际展示的列表：套用筛选条件后的结果。 */
+    /**
+     * 实际展示的列表。
+     *
+     * 三个条件是「或」的关系，命中任意一条就把这条笔记隐藏：
+     *  - 关键词：命中就隐藏（关键词是用来排除的，不是用来筛出来的）
+     *  - 点赞 / 评论：少于阈值就隐藏
+     *
+     * 注意评论数在首页接口里经常缺失（interact_info 只有 liked_count），
+     * 缺失时**不参与判断**，否则一填阈值就会把整个列表清空。
+     */
     val visibleItems: List<FeedItem>
         get() {
             val f = filter
             if (!f.active) return items
             val keyword = f.keyword.trim()
-            return items.filter { item ->
+            return items.filterNot { item ->
                 val card = item.noteCard
-                val text = card?.displayTitle ?: card?.title ?: card?.desc ?: ""
-                val likes = FeedFilter.parseCount(card?.interactInfo?.likedCount)
-                val comments = FeedFilter.parseCount(card?.interactInfo?.commentCount)
-                (keyword.isEmpty() || text.contains(keyword, ignoreCase = true)) &&
-                    likes >= f.minLikes &&
-                    comments >= f.minComments
+                val text = listOfNotNull(card?.displayTitle, card?.title, card?.desc)
+                    .joinToString(" ")
+                val likedRaw = card?.interactInfo?.likedCount
+                val commentRaw = card?.interactInfo?.commentCount
+
+                val byKeyword = keyword.isNotEmpty() && text.contains(keyword, ignoreCase = true)
+                val byLikes = f.minLikes > 0 && !likedRaw.isNullOrBlank() &&
+                    FeedFilter.parseCount(likedRaw) < f.minLikes
+                val byComments = f.minComments > 0 && !commentRaw.isNullOrBlank() &&
+                    FeedFilter.parseCount(commentRaw) < f.minComments
+                byKeyword || byLikes || byComments
             }
         }
 

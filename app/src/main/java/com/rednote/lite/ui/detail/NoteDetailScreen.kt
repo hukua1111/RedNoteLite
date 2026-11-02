@@ -150,10 +150,7 @@ private fun NoteContent(
             }
         }
         // 视频笔记：有播放地址就直接放播放器，不然只能看到封面
-        val videoUrl = note.video?.media?.stream?.h264
-            ?.firstOrNull { !it.masterUrl.isNullOrBlank() }?.masterUrl
-            ?: note.video?.media?.stream?.h265
-                ?.firstOrNull { !it.masterUrl.isNullOrBlank() }?.masterUrl
+        val videoUrl = note.video?.media?.stream?.bestUrl
         if (!videoUrl.isNullOrBlank()) {
             // 视频直链也可能是 http://，同样要升到 https，否则会被明文策略拦掉
             item { VideoPlayer(url = videoUrl.toHttpsUrl()) }

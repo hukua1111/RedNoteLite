@@ -192,8 +192,10 @@ class XhsApi(private val signEngine: SignEngine) {
             append(" note0Keys=").append(n0?.keys()?.asSequence()?.toList())
             append(" coverKeys=").append(n0?.optJSONObject("cover")?.keys()?.asSequence()?.toList())
             append(" coverUrl=").append(
-                n0?.optJSONObject("cover")?.optString("url_default")
-                    ?: n0?.optJSONObject("cover")?.optString("url"),
+                n0?.optJSONObject("cover")?.optString("url_default")?.takeIf { it.isNotBlank() }
+                    ?: n0?.optJSONObject("cover")?.optString("url")?.takeIf { it.isNotBlank() }
+                    ?: n0?.optJSONObject("cover")?.optJSONArray("info_list")
+                        ?.optJSONObject(0)?.optString("url"),
             )
         }
     }.getOrElse { "summarize failed: ${it.message}" }

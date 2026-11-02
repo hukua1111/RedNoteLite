@@ -57,10 +57,21 @@ data class Cover(
     val url: String? = null,
     val width: Int = 0,
     val height: Int = 0,
+    @SerialName("info_list") val infoList: List<ImageInfo> = emptyList(),
 ) {
-    /** 取第一个非空链接：接口有时会返回空字符串，`?:` 是兜不住的。 */
+    /**
+     * 取第一个可用链接。
+     *
+     * 注意：首页/详情用 `url_default`，但 user_posted 的封面 `url` 是空串，
+     * 地址只放在 `info_list` 里（scene 是 CRD_WM_WEBP / CRD_PRV_WEBP），
+     * 所以必须带 info_list 兜底，否则用户主页全是「无封面」。
+     */
     val bestUrl: String?
-        get() = listOfNotNull(urlDefault, urlPre, url).firstOrNull { it.isNotBlank() }?.toHttpsUrl()
+        get() = listOfNotNull(urlDefault, urlPre, url)
+            .firstOrNull { it.isNotBlank() }?.toHttpsUrl()
+            ?: infoList.firstOrNull { it.imageScene == "CRD_PRV_WEBP" }?.url
+                ?.takeIf { it.isNotBlank() }?.toHttpsUrl()
+            ?: infoList.firstOrNull { !it.url.isNullOrBlank() }?.url?.toHttpsUrl()
 }
 
 @Serializable
@@ -143,7 +154,18 @@ data class VideoStream(
     val h264: List<VideoCodec> = emptyList(),
     val h265: List<VideoCodec> = emptyList(),
     val av1: List<VideoCodec> = emptyList(),
-)
+    // 网页版实际返回的 key 是 EF4/EF5/EF6/EF7（h264/h265 那套是 App 端命名），
+    // 之前只按 h264 取，所以永远拿不到播放地址。
+    @SerialName("EF4") val ef4: List<VideoCodec> = emptyList(),
+    @SerialName("EF5") val ef5: List<VideoCodec> = emptyList(),
+    @SerialName("EF6") val ef6: List<VideoCodec> = emptyList(),
+    @SerialName("EF7") val ef7: List<VideoCodec> = emptyList(),
+) {
+    /** 按清晰度优先取第一个有直链的。EF4≈258p、EF5≈520p，都是 mp4。 */
+    val bestUrl: String?
+        get() = (ef5 + ef4 + ef6 + ef7 + h264 + h265 + av1)
+            .firstOrNull { !it.masterUrl.isNullOrBlank() }?.masterUrl
+}
 
 @Serializable
 data class VideoCodec(
