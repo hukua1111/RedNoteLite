@@ -1,17 +1,23 @@
 package com.rednote.lite.ui.main
 
+import android.webkit.CookieManager
+import android.widget.Toast
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -23,7 +29,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -34,10 +42,12 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -53,17 +63,26 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
+import com.rednote.lite.BuildConfig
 import com.rednote.lite.RedNoteApp
+import com.rednote.lite.util.CacheManager
 import com.rednote.lite.data.model.FeedItem
 import com.rednote.lite.data.model.FollowUser
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 /** 底栏两个 tab。用 0/1 存，`rememberSaveable` 对 Int 支持最稳。 */
 private const val TAB_HOME = 0
@@ -76,7 +95,6 @@ fun MainScreen(
     onOpenUser: (String, String, String) -> Unit,
     onLogin: () -> Unit,
     onOpenLogs: () -> Unit,
-    onOpenSettings: () -> Unit,
 ) {
     // 数据挂在 ViewModel 上：进详情页再返回时界面会重建，状态不会丢，也就不会重新拉流
     val vm: MainViewModel = viewModel()
@@ -86,6 +104,9 @@ fun MainScreen(
     var retryKey by rememberSaveable { mutableStateOf(0) }
     var tab by rememberSaveable { mutableStateOf(TAB_HOME) }
     var showFilter by remember { mutableStateOf(false) }
+    var showCache by remember { mutableStateOf(false) }
+    // 顶栏搜索是点右上角放大镜才展开的，默认收起
+    var searchOpen by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val gridState = rememberLazyGridState()
 
@@ -103,6 +124,16 @@ fun MainScreen(
     }
 
     LaunchedEffect(authVersion) { vm.refreshProfile() }
+
+    fun logout() {
+        val cm = CookieManager.getInstance()
+        cm.removeAllCookies { }
+        cm.flush()
+        // 签名页带着旧会话，销毁让它下次用干净状态重新加载
+        RedNoteApp.instance.signEngine.destroy()
+        RedNoteApp.instance.clearProfile()
+        RedNoteApp.instance.notifyAuthChanged()
+    }
 
     LaunchedEffect(tab, authVersion) {
         if (tab == TAB_FOLLOWING) followVm.loadIfNeeded()
@@ -126,31 +157,39 @@ fun MainScreen(
             // enableEdgeToEdge 后界面会画到状态栏/导航栏下面，这里统一避让安全区
             .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
-        if (tab == TAB_HOME) {
-            SearchBar(
-                query = query,
-                onQueryChange = { query = it },
-                active = vm.mode == FeedMode.SEARCH,
-                avatarUrl = avatarUrl,
-                nickname = nickname,
-                loggedIn = loggedIn,
-                onSubmit = {
-                    if (query.isNotBlank()) {
-                        vm.submitSearch(query)
-                        retryKey++
-                    }
-                },
-                onClear = {
-                    query = ""
-                    vm.clearSearch()
+        MainTopBar(
+            searchOpen = searchOpen,
+            query = query,
+            onQueryChange = { query = it },
+            searchActive = vm.mode == FeedMode.SEARCH,
+            onSubmit = {
+                if (query.isNotBlank()) {
+                    vm.submitSearch(query)
                     retryKey++
-                },
-                onLogin = onLogin,
-                onOpenLogs = onOpenLogs,
-                onOpenSettings = onOpenSettings,
-                onOpenFilter = { showFilter = true },
-            )
+                }
+            },
+            onOpenSearch = {
+                // 搜索结果落在首页，所以从关注页点搜索先切回首页
+                tab = TAB_HOME
+                searchOpen = true
+            },
+            onCloseSearch = {
+                searchOpen = false
+                query = ""
+                vm.clearSearch()
+                retryKey++
+            },
+            avatarUrl = avatarUrl,
+            nickname = nickname,
+            loggedIn = loggedIn,
+            onLogin = onLogin,
+            onOpenLogs = onOpenLogs,
+            onOpenFilter = { showFilter = true },
+            onOpenCache = { showCache = true },
+            onLogout = { logout() },
+        )
 
+        if (tab == TAB_HOME) {
             val visible = vm.visibleItems
 
             Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -252,6 +291,101 @@ fun MainScreen(
             },
         )
     }
+
+    if (showCache) {
+        CacheDialog(onDismiss = { showCache = false })
+    }
+}
+
+/**
+ * 缓存管理。
+ *
+ * 判断依据从「笔记条数」改成「占用大小」：滑块选 2~8 GB 的上限，
+ * 超过就清到上限的 40%，删的时候从最旧的文件开始。
+ */
+@Composable
+private fun CacheDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var threshold by remember { mutableStateOf(CacheManager.thresholdGb(context)) }
+    var usage by remember { mutableStateOf(-1L) }
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("") }
+
+    suspend fun refreshUsage() {
+        usage = withContext(Dispatchers.IO) { CacheManager.usageBytes(context) }
+    }
+
+    LaunchedEffect(Unit) { refreshUsage() }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("缓存管理") },
+        text = {
+            Column {
+                Text(
+                    "当前占用 " + if (usage < 0) "计算中…" else CacheManager.formatSize(usage),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    "占用上限 %.1f GB".format(threshold),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 14.dp),
+                )
+                Slider(
+                    value = threshold,
+                    // 0.5 GB 一档
+                    onValueChange = { threshold = (it * 2f).roundToInt() / 2f },
+                    valueRange = CacheManager.MIN_GB..CacheManager.MAX_GB,
+                    steps = 11,
+                )
+                Text(
+                    "超过上限时自动清理到 %.1f GB（上限的 40%%），优先删最旧的。"
+                        .format(threshold * 0.4f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (message.isNotEmpty()) {
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+                OutlinedButton(
+                    onClick = {
+                        if (busy) return@OutlinedButton
+                        busy = true
+                        scope.launch {
+                            CacheManager.setThresholdGb(context, threshold)
+                            val freed = withContext(Dispatchers.IO) {
+                                CacheManager.clearToTarget(context)
+                            }
+                            refreshUsage()
+                            message = if (freed > 0) {
+                                "已释放 ${CacheManager.formatSize(freed)}"
+                            } else {
+                                "占用已低于清理目标，无需清理"
+                            }
+                            busy = false
+                        }
+                    },
+                    modifier = Modifier.padding(top = 12.dp),
+                ) {
+                    Text(if (busy) "清理中…" else "立即清理")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    CacheManager.setThresholdGb(context, threshold)
+                    onDismiss()
+                },
+            ) { Text("确定") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
@@ -326,6 +460,7 @@ private fun FollowingContent(
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     Box(modifier) {
         when {
             vm.loading && vm.users.isEmpty() -> Box(
@@ -355,9 +490,21 @@ private fun FollowingContent(
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(count = vm.users.size) { index ->
                         val user = vm.users[index]
-                        FollowRow(user) {
-                            onOpenUser(user.userId, user.nickname, user.avatarUrl ?: "")
-                        }
+                        FollowRow(
+                            user = user,
+                            unfollowing = vm.busyUserId == user.userId,
+                            onClick = {
+                                onOpenUser(user.userId, user.nickname, user.avatarUrl ?: "")
+                            },
+                            onUnfollow = {
+                                scope.launch {
+                                    val result = vm.unfollow(user.userId)
+                                    if (result.isNotBlank()) {
+                                        Toast.makeText(context, result, Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            },
+                        )
                     }
                 }
             }
@@ -366,7 +513,12 @@ private fun FollowingContent(
 }
 
 @Composable
-private fun FollowRow(user: FollowUser, onClick: () -> Unit) {
+private fun FollowRow(
+    user: FollowUser,
+    unfollowing: Boolean,
+    onClick: () -> Unit,
+    onUnfollow: () -> Unit,
+) {
     Surface(onClick = onClick) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
@@ -404,16 +556,16 @@ private fun FollowRow(user: FollowUser, onClick: () -> Unit) {
                     )
                 }
             }
-            // 右侧状态标（对应网页上的「已关注」）
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = MaterialTheme.colorScheme.surfaceVariant,
+            // 右侧按钮：点一下取关（这里原本只是个不可点的状态标）
+            OutlinedButton(
+                onClick = onUnfollow,
+                enabled = !unfollowing,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                modifier = Modifier.height(32.dp),
             ) {
                 Text(
-                    "已关注",
+                    if (unfollowing) "处理中…" else "已关注",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 )
             }
         }
@@ -465,102 +617,175 @@ private fun StatusBlock(
 }
 
 @Composable
-private fun SearchBar(
+private fun MainTopBar(
+    searchOpen: Boolean,
     query: String,
     onQueryChange: (String) -> Unit,
-    active: Boolean,
+    searchActive: Boolean,
+    onSubmit: () -> Unit,
+    onOpenSearch: () -> Unit,
+    onCloseSearch: () -> Unit,
     avatarUrl: String,
     nickname: String,
     loggedIn: Boolean,
-    onSubmit: () -> Unit,
-    onClear: () -> Unit,
     onLogin: () -> Unit,
     onOpenLogs: () -> Unit,
-    onOpenSettings: () -> Unit,
     onOpenFilter: () -> Unit,
+    onOpenCache: () -> Unit,
+    onLogout: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    var showAbout by remember { mutableStateOf(false) }
+    val focus = remember { FocusRequester() }
 
-    OutlinedTextField(
-        value = query,
-        onValueChange = onQueryChange,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-        placeholder = { Text("搜索笔记、用户、话题") },
-        singleLine = true,
-        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-        trailingIcon = {
-            when {
-                active -> TextButton(onClick = onClear) { Text("取消") }
-                // 已登录：头像按钮，点开是账号菜单
-                loggedIn -> Box {
-                    Surface(
-                        onClick = { menuOpen = true },
-                        shape = CircleShape,
-                        tonalElevation = 2.dp,
-                        modifier = Modifier.padding(end = 8.dp).size(32.dp),
+    if (showAbout) {
+        AlertDialog(
+            onDismissRequest = { showAbout = false },
+            title = { Text("关于") },
+            text = {
+                Text(
+                    "第三方非官方客户端，仅供学习与技术研究，内容版权归小红书及原作者所有。\n\n" +
+                        "版本 v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showAbout = false }) { Text("知道了") }
+            },
+        )
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (searchOpen) {
+            IconButton(onClick = onCloseSearch) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "退出搜索")
+            }
+            OutlinedTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                modifier = Modifier.weight(1f).focusRequester(focus),
+                placeholder = { Text("搜索笔记、用户、话题") },
+                singleLine = true,
+                shape = RoundedCornerShape(24.dp),
+                trailingIcon = {
+                    if (searchActive) TextButton(onClick = onCloseSearch) { Text("取消") }
+                },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
+            )
+            LaunchedEffect(Unit) {
+                // 等一帧再要焦点，否则输入框可能还没挂到窗口上
+                delay(120)
+                runCatching { focus.requestFocus() }
+            }
+        } else {
+            // 左上角：菜单（原头像菜单 + 设置页的内容都收在这里）
+            Box {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(Icons.Default.Menu, contentDescription = "菜单")
+                }
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false },
+                    modifier = Modifier.width(268.dp),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (avatarUrl.isNotBlank()) {
+                        if (loggedIn && avatarUrl.isNotBlank()) {
                             AsyncImage(
                                 model = avatarUrl,
-                                contentDescription = "我的账号",
+                                contentDescription = "头像",
                                 contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize(),
+                                modifier = Modifier.size(40.dp).clip(CircleShape),
                             )
                         } else {
-                            // 头像还没取到时先占位，避免按钮突然消失
-                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Text("我", style = MaterialTheme.typography.labelLarge)
+                            Box(
+                                Modifier.size(40.dp).clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    if (loggedIn) "我" else "?",
+                                    style = MaterialTheme.typography.titleSmall,
+                                )
                             }
                         }
-                    }
-                    DropdownMenu(
-                        expanded = menuOpen,
-                        onDismissRequest = { menuOpen = false },
-                    ) {
-                        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        Column(Modifier.padding(start = 12.dp)) {
                             Text(
-                                nickname.ifBlank { "已登录" },
+                                if (loggedIn) nickname.ifBlank { "已登录" } else "未登录",
                                 style = MaterialTheme.typography.titleSmall,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
                             Text(
-                                "登录状态：正常",
+                                if (loggedIn) "登录状态：正常" else "登录后才能浏览笔记",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        HorizontalDivider()
+                    }
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text("筛选") },
+                        onClick = {
+                            menuOpen = false
+                            onOpenFilter()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("缓存管理") },
+                        onClick = {
+                            menuOpen = false
+                            onOpenCache()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("日志记录") },
+                        onClick = {
+                            menuOpen = false
+                            onOpenLogs()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("关于") },
+                        onClick = {
+                            menuOpen = false
+                            showAbout = true
+                        },
+                    )
+                    HorizontalDivider()
+                    if (loggedIn) {
                         DropdownMenuItem(
-                            text = { Text("筛选") },
+                            text = { Text("退出登录") },
                             onClick = {
                                 menuOpen = false
-                                onOpenFilter()
+                                onLogout()
                             },
                         )
+                    } else {
                         DropdownMenuItem(
-                            text = { Text("设置") },
+                            text = { Text("登录") },
                             onClick = {
                                 menuOpen = false
-                                onOpenSettings()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("日志记录") },
-                            onClick = {
-                                menuOpen = false
-                                onOpenLogs()
+                                onLogin()
                             },
                         )
                     }
                 }
-                else -> TextButton(onClick = onLogin) { Text("登录") }
             }
-        },
-        shape = RoundedCornerShape(24.dp),
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-        keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
-    )
+
+            Spacer(Modifier.weight(1f))
+
+            // 右上角：搜索
+            IconButton(onClick = onOpenSearch) {
+                Icon(Icons.Default.Search, contentDescription = "搜索")
+            }
+        }
+    }
 }
 
 @Composable

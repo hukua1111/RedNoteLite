@@ -9,7 +9,6 @@ import com.rednote.lite.RedNoteApp
 import com.rednote.lite.data.model.FeedItem
 import com.rednote.lite.data.sign.UserProfile
 import com.rednote.lite.util.AppLog
-import com.rednote.lite.util.CacheManager
 
 enum class FeedMode { HOME, SEARCH }
 
@@ -251,16 +250,14 @@ class MainViewModel : ViewModel() {
     }
 
     /**
-     * 列表超过 [MAX_ITEMS] 时丢掉最早的一批笔记，
-     * 顺手把它们封面图的磁盘缓存删掉，避免缓存无限长。
+     * 列表超过 [MAX_ITEMS] 时丢掉最早的一批笔记。
+     *
+     * 只是控制内存里的列表长度；图片缓存的回收已经改成按占用大小判断
+     * （见 CacheManager），不再跟着列表条数走。
      */
     private fun trimOldest() {
         if (items.size <= MAX_ITEMS) return
-        val removed = items.drop(MAX_ITEMS)
         items = items.take(MAX_ITEMS)
-        val urls = removed.mapNotNull { it.noteCard?.cover?.bestUrl }
-        CacheManager.evict(RedNoteApp.instance, urls)
-        AppLog.d("MainViewModel", "trimOldest: 移除 ${removed.size} 条，清理 ${urls.size} 张缓存")
     }
 
     /** 读取当前登录用户，供首页右上角展示头像。 */

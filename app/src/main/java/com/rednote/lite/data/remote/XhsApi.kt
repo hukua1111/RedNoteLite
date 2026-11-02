@@ -13,6 +13,7 @@ import com.rednote.lite.util.AppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -335,4 +336,40 @@ class XhsApi(private val signEngine: SignEngine) {
     /** 当前登录用户资料。 */
     suspend fun selfInfo(): SelfInfo? =
         decodeData(requestRaw("/api/sns/web/v2/user/me", "GET", null, signed = true))
+
+    /**
+     * 关注 / 取关。
+     *
+     *   POST /api/sns/web/v1/user/follow     body {"target_user_id":"..."}
+     *   POST /api/sns/web/v1/user/unfollow   body {"target_user_id":"..."}
+     *
+     * 成功后 data.fstatus 是 follow / followed / both。
+     * 这里只用 envelope.success 判断，fstatus 不参与——它区分的是「对方是否也关注你」，
+     * 和「这次操作是否成功」无关。
+     */
+    suspend fun setFollow(userId: String, follow: Boolean): Boolean {
+        if (userId.isBlank()) {
+            fail("缺少 user_id，无法${if (follow) "关注" else "取关"}")
+            return false
+        }
+        val path = if (follow) {
+            "/api/sns/web/v1/user/follow"
+        } else {
+            "/api/sns/web/v1/user/unfollow"
+        }
+        val body = buildJsonObject { put("target_user_id", userId) }.toString()
+        val raw = requestRaw(path, "POST", body, signed = true) ?: return false
+        return runCatching {
+            val env = json.decodeFromString<ApiEnvelope<JsonElement>>(raw)
+            if (!env.success) {
+                lastError = "接口返回 code=${env.code} msg=${env.msg ?: ""}".trim()
+                AppLog.w(TAG, "setFollow($follow) failed: code=${env.code} msg=${env.msg}")
+            }
+            env.success
+        }.getOrElse {
+            lastError = "解析失败：${it.message}"
+            AppLog.e(TAG, "setFollow decode failed: ${it.message}")
+            false
+        }
+    }
 }

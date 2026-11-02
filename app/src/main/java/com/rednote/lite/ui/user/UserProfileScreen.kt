@@ -1,5 +1,6 @@
 package com.rednote.lite.ui.user
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -18,12 +20,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -31,16 +35,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.launch
 import com.rednote.lite.RedNoteApp
 import com.rednote.lite.data.model.UserNoteItem
 import com.rednote.lite.util.toHttpsUrl
@@ -56,6 +63,12 @@ class UserProfileViewModel : ViewModel() {
     var loading by mutableStateOf(false)
         private set
     var hasMore by mutableStateOf(false)
+        private set
+
+    /** 我是否已关注 TA。 */
+    var followed by mutableStateOf(false)
+        private set
+    var followBusy by mutableStateOf(false)
         private set
 
     private var cursor = ""
@@ -77,6 +90,36 @@ class UserProfileViewModel : ViewModel() {
             hasMore = result.hasMore
         }
         loading = false
+        detectFollowed(userId)
+    }
+
+    /**
+     * 判断「我是否已关注 TA」。
+     *
+     * 网页端没有「单个用户的关注状态」接口，只能用我关注的人列表比对。
+     * 该列表一次返回、上限约 450 条，关注特别多时可能误判成未关注——
+     * 这种情况下点一次「关注」也不会出错（服务端本来就幂等）。
+     */
+    private suspend fun detectFollowed(userId: String) {
+        val list = api.following() ?: return
+        followed = list.any { it.userId == userId }
+    }
+
+    /** 关注 / 取关，返回给用户看的提示。 */
+    suspend fun toggleFollow(): String {
+        if (followBusy) return ""
+        val uid = currentUserId
+        if (uid.isNullOrBlank()) return "缺少用户 ID"
+        followBusy = true
+        val target = !followed
+        val ok = api.setFollow(uid, follow = target)
+        if (ok) followed = target
+        followBusy = false
+        return if (ok) {
+            if (target) "已关注" else "已取消关注"
+        } else {
+            api.lastError.ifBlank { if (target) "关注失败" else "取关失败" }
+        }
     }
 
     suspend fun loadMore() {
@@ -99,6 +142,8 @@ fun UserProfileScreen(
     onOpenNote: (String, String) -> Unit,
 ) {
     val vm: UserProfileViewModel = viewModel()
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     LaunchedEffect(userId) { vm.loadIfNeeded(userId) }
 
     Scaffold(
@@ -128,7 +173,21 @@ fun UserProfileScreen(
                 modifier = Modifier.fillMaxSize(),
             ) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
-                    ProfileHeader(userId = userId, nickname = nickname, avatar = avatar)
+                    ProfileHeader(
+                        userId = userId,
+                        nickname = nickname,
+                        avatar = avatar,
+                        followed = vm.followed,
+                        busy = vm.followBusy,
+                        onToggleFollow = {
+                            scope.launch {
+                                val message = vm.toggleFollow()
+                                if (message.isNotBlank()) {
+                                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                    )
                 }
 
                 if (vm.loading && vm.notes.isEmpty()) {
@@ -165,7 +224,14 @@ fun UserProfileScreen(
 }
 
 @Composable
-private fun ProfileHeader(userId: String, nickname: String, avatar: String) {
+private fun ProfileHeader(
+    userId: String,
+    nickname: String,
+    avatar: String,
+    followed: Boolean,
+    busy: Boolean,
+    onToggleFollow: () -> Unit,
+) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (avatar.isNotBlank()) {
@@ -183,7 +249,7 @@ private fun ProfileHeader(userId: String, nickname: String, avatar: String) {
                     Text(nickname.take(1).ifBlank { "?" }, style = MaterialTheme.typography.titleLarge)
                 }
             }
-            Column(Modifier.padding(start = 12.dp)) {
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text(
                     nickname.ifBlank { "用户" },
                     style = MaterialTheme.typography.titleMedium,
@@ -196,6 +262,32 @@ private fun ProfileHeader(userId: String, nickname: String, avatar: String) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
+            }
+            // 关注 / 已关注：点一下切换
+            if (followed) {
+                OutlinedButton(
+                    onClick = onToggleFollow,
+                    enabled = !busy,
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                    modifier = Modifier.height(34.dp),
+                ) {
+                    Text(
+                        if (busy) "处理中…" else "已关注",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+            } else {
+                Button(
+                    onClick = onToggleFollow,
+                    enabled = !busy,
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 4.dp),
+                    modifier = Modifier.height(34.dp),
+                ) {
+                    Text(
+                        if (busy) "处理中…" else "关注",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
             }
         }
         HorizontalDivider(Modifier.padding(top = 12.dp))

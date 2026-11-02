@@ -11,7 +11,6 @@ import com.rednote.lite.ui.detail.NoteDetailScreen
 import com.rednote.lite.ui.login.LoginScreen
 import com.rednote.lite.ui.log.LogScreen
 import com.rednote.lite.ui.main.MainScreen
-import com.rednote.lite.ui.settings.SettingsScreen
 import com.rednote.lite.ui.user.UserProfileScreen
 
 object Routes {
@@ -19,7 +18,6 @@ object Routes {
     const val LOGIN = "login"
     const val DETAIL = "detail"
     const val LOGS = "logs"
-    const val SETTINGS = "settings"
     const val USER = "user"
 }
 
@@ -44,7 +42,6 @@ fun AppNavHost(navController: NavHostController) {
                 onOpenUser = { userId, nickname, avatar -> openUser(userId, nickname, avatar) },
                 onLogin = { navController.navigate(Routes.LOGIN) },
                 onOpenLogs = { navController.navigate(Routes.LOGS) },
-                onOpenSettings = { navController.navigate(Routes.SETTINGS) },
             )
         }
         composable(Routes.LOGIN) {
@@ -52,12 +49,6 @@ fun AppNavHost(navController: NavHostController) {
         }
         composable(Routes.LOGS) {
             LogScreen(onBack = { navController.popBackStack() })
-        }
-        composable(Routes.SETTINGS) {
-            SettingsScreen(
-                onBack = { navController.popBackStack() },
-                onOpenLogs = { navController.navigate(Routes.LOGS) },
-            )
         }
         composable(
             route = "${Routes.DETAIL}/{noteId}?token={token}",
