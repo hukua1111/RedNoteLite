@@ -207,7 +207,7 @@ private fun NoteContent(note: NoteDetailCard, comments: List<Comment>) {
                     modifier = Modifier.padding(top = 12.dp),
                 ) {
                     AsyncImage(
-                        model = note.user?.avatar,
+                        model = note.user?.avatarUrl,
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.size(32.dp).clip(CircleShape),
@@ -241,7 +241,7 @@ private fun NoteContent(note: NoteDetailCard, comments: List<Comment>) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     AsyncImage(
-                        model = c.userInfo?.avatar,
+                        model = c.userInfo?.avatarUrl,
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.size(28.dp).clip(CircleShape),

@@ -14,6 +14,7 @@ import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import com.rednote.lite.util.AppLog
+import com.rednote.lite.util.toHttpsUrl
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -400,7 +401,7 @@ class SignEngine(private val context: Context) {
         val avatar = obj.optString("avatar")
         AppLog.d(TAG, "readUserInfo nickname=${nickname.length} avatar=${avatar.length}")
         if (nickname.isEmpty() && avatar.isEmpty()) return@withContext null
-        UserProfile(nickname = nickname, avatar = avatar)
+        UserProfile(nickname = nickname, avatar = avatar.toHttpsUrl())
     }
 
     /** 生成签名头；失败返回 null。 */

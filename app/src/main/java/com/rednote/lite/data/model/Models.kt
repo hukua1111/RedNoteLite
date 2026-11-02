@@ -1,5 +1,6 @@
 package com.rednote.lite.data.model
 
+import com.rednote.lite.util.toHttpsUrl
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
@@ -59,7 +60,7 @@ data class Cover(
 ) {
     /** 取第一个非空链接：接口有时会返回空字符串，`?:` 是兜不住的。 */
     val bestUrl: String?
-        get() = listOfNotNull(urlDefault, urlPre, url).firstOrNull { it.isNotBlank() }
+        get() = listOfNotNull(urlDefault, urlPre, url).firstOrNull { it.isNotBlank() }?.toHttpsUrl()
 }
 
 @Serializable
@@ -74,7 +75,10 @@ data class UserBrief(
     val nickname: String = "",
     val avatar: String? = null,
     @SerialName("xsec_token") val xsecToken: String? = null,
-)
+) {
+    /** 头像也可能是 http://，统一升到 https 才不会被明文策略拦掉。 */
+    val avatarUrl: String? get() = avatar?.toHttpsUrl()
+}
 
 @Serializable
 data class InteractInfo(
@@ -169,9 +173,10 @@ data class NoteImage(
      */
     val bestUrl: String?
         get() = listOfNotNull(urlDefault, urlPre, url)
-            .firstOrNull { it.isNotBlank() }
-            ?: infoList.firstOrNull { it.imageScene == "WB_DFT" }?.url?.takeIf { it.isNotBlank() }
-            ?: infoList.firstOrNull { !it.url.isNullOrBlank() }?.url
+            .firstOrNull { it.isNotBlank() }?.toHttpsUrl()
+            ?: infoList.firstOrNull { it.imageScene == "WB_DFT" }?.url
+                ?.takeIf { it.isNotBlank() }?.toHttpsUrl()
+            ?: infoList.firstOrNull { !it.url.isNullOrBlank() }?.url?.toHttpsUrl()
 }
 
 @Serializable
