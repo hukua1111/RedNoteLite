@@ -1,8 +1,11 @@
 package com.rednote.lite.ui.detail
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -52,6 +55,7 @@ fun NoteDetailScreen(
     noteId: String,
     xsecToken: String,
     onBack: () -> Unit,
+    onOpenUser: (String, String, String) -> Unit,
 ) {
     var state by remember { mutableStateOf<LoadState<NoteDetailCard>>(LoadState.Loading) }
     var comments by remember { mutableStateOf<List<Comment>>(emptyList()) }
@@ -104,15 +108,20 @@ fun NoteDetailScreen(
                         }
                     }
                 }
-                is LoadState.Success -> NoteContent(s.data, comments)
+                is LoadState.Success -> NoteContent(s.data, comments, onOpenUser)
                 else -> Unit
             }
         }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun NoteContent(note: NoteDetailCard, comments: List<Comment>) {
+private fun NoteContent(
+    note: NoteDetailCard,
+    comments: List<Comment>,
+    onOpenUser: (String, String, String) -> Unit,
+) {
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         // 卡片拿回来是空的：给一句明确提示，而不是留一整屏白
         if (note.imageList.isEmpty() && note.title.isNullOrBlank() && note.desc.isNullOrBlank()) {
@@ -180,8 +189,10 @@ private fun NoteContent(note: NoteDetailCard, comments: List<Comment>) {
                     )
                 }
                 if (note.tags.isNotEmpty()) {
-                    Row(
+                    // 用 FlowRow：标签多了会自动换行，不会把最后一个挤成竖排的窄框
+                    FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.padding(top = 8.dp),
                     ) {
                         note.tags.take(6).forEach { tag ->
@@ -192,6 +203,7 @@ private fun NoteContent(note: NoteDetailCard, comments: List<Comment>) {
                                 Text(
                                     "#${tag.name}",
                                     style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                                 )
                             }
@@ -200,7 +212,12 @@ private fun NoteContent(note: NoteDetailCard, comments: List<Comment>) {
                 }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(top = 12.dp),
+                    modifier = Modifier
+                        .padding(top = 12.dp)
+                        .clickable(enabled = !note.user?.userId.isNullOrBlank()) {
+                            val u = note.user ?: return@clickable
+                            onOpenUser(u.userId, u.nickname, u.avatarUrl ?: "")
+                        },
                 ) {
                     AsyncImage(
                         model = note.user?.avatarUrl,
@@ -235,7 +252,13 @@ private fun NoteContent(note: NoteDetailCard, comments: List<Comment>) {
 
         items(comments, key = { it.id }) { c ->
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable(enabled = !c.userInfo?.userId.isNullOrBlank()) {
+                        val u = c.userInfo ?: return@clickable
+                        onOpenUser(u.userId, u.nickname, u.avatarUrl ?: "")
+                    },
+                ) {
                     AsyncImage(
                         model = c.userInfo?.avatarUrl,
                         contentDescription = null,

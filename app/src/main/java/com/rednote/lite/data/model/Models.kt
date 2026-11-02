@@ -213,6 +213,44 @@ data class Comment(
     @SerialName("ip_location") val ipLocation: String? = null,
 )
 
+// ---------------- 关注列表 / 用户主页 ----------------
+
+@Serializable
+data class FollowingData(
+    val items: List<FollowUser> = emptyList(),
+)
+
+@Serializable
+data class FollowUser(
+    @SerialName("user_id") val userId: String = "",
+    val nickname: String = "",
+    @SerialName("image") val image: String? = null,
+    @SerialName("avatar") val avatar: String? = null,
+    val desc: String? = null,
+    @SerialName("red_id") val redId: String? = null,
+    @SerialName("xsec_token") val xsecToken: String? = null,
+) {
+    val avatarUrl: String?
+        get() = (image?.takeIf { it.isNotBlank() } ?: avatar?.takeIf { it.isNotBlank() })?.toHttpsUrl()
+}
+
+@Serializable
+data class UserNotesData(
+    val notes: List<UserNoteItem> = emptyList(),
+    val cursor: String? = null,
+    @SerialName("has_more") val hasMore: Boolean = false,
+)
+
+@Serializable
+data class UserNoteItem(
+    @SerialName("note_id") val noteId: String = "",
+    @SerialName("display_title") val displayTitle: String? = null,
+    val type: String? = null,
+    val cover: Cover? = null,
+    @SerialName("interact_info") val interactInfo: InteractInfo? = null,
+    @SerialName("xsec_token") val xsecToken: String? = null,
+)
+
 // ---------------- 通用 ----------------
 
 @Serializable

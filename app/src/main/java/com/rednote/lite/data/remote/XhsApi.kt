@@ -3,7 +3,10 @@ package com.rednote.lite.data.remote
 import com.rednote.lite.data.model.ApiEnvelope
 import com.rednote.lite.data.model.CommentsPage
 import com.rednote.lite.data.model.FeedData
+import com.rednote.lite.data.model.FollowUser
+import com.rednote.lite.data.model.FollowingData
 import com.rednote.lite.data.model.NoteDetailResponse
+import com.rednote.lite.data.model.UserNotesData
 import com.rednote.lite.data.sign.SignEngine
 import com.rednote.lite.util.AppLog
 import kotlinx.coroutines.Dispatchers
@@ -270,6 +273,32 @@ class XhsApi(private val signEngine: SignEngine) {
             append("&top_comment_id=")
             append("&image_formats=").append(enc("jpg,webp,avif"))
             append("&xsec_token=").append(enc(xsecToken))
+        }
+        return decodeData(requestRaw(query, "GET", null, signed = true))
+    }
+
+    /**
+     * 我关注的人。
+     *
+     * 网页端没有独立的「关注列表」分页接口，页面里 @用户 用的
+     * `/api/sns/web/v1/intimacy/intimacy_list` 返回的就是关注的人：
+     * 一次性返回、无分页（num/cursor/page 都会被忽略），单次上限约 450 条。
+     * 该请求没有 query，签名只签 path。
+     */
+    suspend fun following(): List<FollowUser>? =
+        decodeData<FollowingData>(
+            requestRaw("/api/sns/web/v1/intimacy/intimacy_list", "GET", null, signed = true)
+        )?.items
+
+    /** 指定用户发布的笔记（游标分页）。 */
+    suspend fun userNotes(userId: String, cursor: String = "", num: Int = 30): UserNotesData? {
+        fun enc(v: String): String = URLEncoder.encode(v, "UTF-8")
+        val query = buildString {
+            append("/api/sns/web/v1/user_posted")
+            append("?num=").append(num)
+            append("&cursor=").append(enc(cursor))
+            append("&user_id=").append(enc(userId))
+            append("&image_scenes=").append(enc("CRD_WM_WEBP,CRD_PRV_WEBP"))
         }
         return decodeData(requestRaw(query, "GET", null, signed = true))
     }
