@@ -76,7 +76,7 @@ class MainViewModel : ViewModel() {
     var filter by mutableStateOf(FeedFilter())
         private set
 
-    fun setFilter(value: FeedFilter) {
+    fun updateFilter(value: FeedFilter) {
         filter = value
     }
 

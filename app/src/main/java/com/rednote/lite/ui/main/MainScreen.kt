@@ -165,7 +165,7 @@ fun MainScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = { vm.setFilter(FeedFilter()) }) { Text("清除筛选") }
+                    TextButton(onClick = { vm.updateFilter(FeedFilter()) }) { Text("清除筛选") }
                 }
             }
 
@@ -258,7 +258,7 @@ fun MainScreen(
             initial = vm.filter,
             onDismiss = { showFilter = false },
             onApply = {
-                vm.setFilter(it)
+                vm.updateFilter(it)
                 showFilter = false
             },
         )
