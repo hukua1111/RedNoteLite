@@ -153,22 +153,6 @@ fun MainScreen(
 
             val visible = vm.visibleItems
 
-            // 筛选生效时给一条可见的提示，否则用户会以为笔记丢了
-            if (vm.filter.active) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "已屏蔽 ${vm.items.size - visible.size} 条 · 剩余 ${visible.size}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(onClick = { vm.updateFilter(FeedFilter()) }) { Text("清除筛选") }
-                }
-            }
-
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 PullToRefreshBox(
                     isRefreshing = vm.refreshing,
@@ -200,6 +184,11 @@ fun MainScreen(
                                         onRetry = { retryKey++ },
                                         onLogin = onLogin,
                                         onOpenLogs = onOpenLogs,
+                                        onClearFilter = if (vm.filter.active) {
+                                            { vm.updateFilter(FeedFilter()) }
+                                        } else {
+                                            null
+                                        },
                                     )
                                 }
                             } else {
@@ -285,7 +274,8 @@ private fun FilterDialog(
                 OutlinedTextField(
                     value = keyword,
                     onValueChange = { keyword = it },
-                    label = { Text("关键词（标题/正文命中则隐藏）") },
+                    label = { Text("关键词（多个用 / 分隔，命中即隐藏）") },
+                    placeholder = { Text("例如：广告/代购/链接") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -437,6 +427,7 @@ private fun StatusBlock(
     onRetry: () -> Unit,
     onLogin: () -> Unit,
     onOpenLogs: () -> Unit,
+    onClearFilter: (() -> Unit)? = null,
 ) {
     Box(
         Modifier.fillMaxWidth().padding(top = 96.dp, start = 24.dp, end = 24.dp),
@@ -445,6 +436,13 @@ private fun StatusBlock(
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             if (error == null) {
                 Text(emptyText, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // 整个列表都被筛掉时给个出口，否则只能翻头像菜单
+                val clear = onClearFilter
+                if (clear != null) {
+                    TextButton(onClick = clear, modifier = Modifier.padding(top = 8.dp)) {
+                        Text("清除筛选")
+                    }
+                }
             } else {
                 Text("内容加载失败", style = MaterialTheme.typography.titleSmall)
                 Text(
