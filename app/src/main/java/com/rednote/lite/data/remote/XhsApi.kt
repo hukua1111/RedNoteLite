@@ -6,6 +6,7 @@ import com.rednote.lite.data.model.FeedData
 import com.rednote.lite.data.model.FollowUser
 import com.rednote.lite.data.model.FollowingData
 import com.rednote.lite.data.model.NoteDetailResponse
+import com.rednote.lite.data.model.SelfInfo
 import com.rednote.lite.data.model.UserNotesData
 import com.rednote.lite.data.sign.SignEngine
 import com.rednote.lite.util.AppLog
@@ -178,6 +179,25 @@ class XhsApi(private val signEngine: SignEngine) {
         }
     }.getOrElse { "summarize failed: ${it.message}" }
 
+    /** user_posted 的字段摘要，封面取不到时靠它定位真实字段名。 */
+    private fun summarizeNotes(raw: String): String = runCatching {
+        val root = JSONObject(raw)
+        val data = root.optJSONObject("data")
+        val notes = data?.optJSONArray("notes")
+        val n0 = notes?.optJSONObject(0)
+        buildString {
+            append("code=").append(root.optInt("code"))
+            append(" dataKeys=").append(data?.keys()?.asSequence()?.toList())
+            append(" notes=").append(notes?.length() ?: -1)
+            append(" note0Keys=").append(n0?.keys()?.asSequence()?.toList())
+            append(" coverKeys=").append(n0?.optJSONObject("cover")?.keys()?.asSequence()?.toList())
+            append(" coverUrl=").append(
+                n0?.optJSONObject("cover")?.optString("url_default")
+                    ?: n0?.optJSONObject("cover")?.optString("url"),
+            )
+        }
+    }.getOrElse { "summarize failed: ${it.message}" }
+
     // ---------------- 业务接口 ----------------
 
     /** 搜索笔记（无需签名，但需要登录 Cookie）。 */
@@ -292,6 +312,11 @@ class XhsApi(private val signEngine: SignEngine) {
 
     /** 指定用户发布的笔记（游标分页）。 */
     suspend fun userNotes(userId: String, cursor: String = "", num: Int = 30): UserNotesData? {
+        if (userId.isBlank()) {
+            // 没有 user_id 时服务端只会返回 data:null，直接给出可读的原因
+            fail("缺少 user_id，无法读取该用户的笔记")
+            return null
+        }
         fun enc(v: String): String = URLEncoder.encode(v, "UTF-8")
         val query = buildString {
             append("/api/sns/web/v1/user_posted")
@@ -300,6 +325,12 @@ class XhsApi(private val signEngine: SignEngine) {
             append("&user_id=").append(enc(userId))
             append("&image_scenes=").append(enc("CRD_WM_WEBP,CRD_PRV_WEBP"))
         }
-        return decodeData(requestRaw(query, "GET", null, signed = true))
+        val raw = requestRaw(query, "GET", null, signed = true)
+        if (!raw.isNullOrBlank()) AppLog.d(TAG, "user_posted ${summarizeNotes(raw)}")
+        return decodeData(raw)
     }
+
+    /** 当前登录用户资料。 */
+    suspend fun selfInfo(): SelfInfo? =
+        decodeData(requestRaw("/api/sns/web/v2/user/me", "GET", null, signed = true))
 }

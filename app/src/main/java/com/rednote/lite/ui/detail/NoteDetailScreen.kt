@@ -1,5 +1,9 @@
 package com.rednote.lite.ui.detail
 
+import android.net.Uri
+import android.widget.MediaController
+import android.widget.VideoView
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,22 +36,28 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import coil3.compose.AsyncImage
 import com.rednote.lite.data.model.Comment
 import com.rednote.lite.data.model.NoteDetailCard
 import com.rednote.lite.ui.common.LoadState
+import com.rednote.lite.util.toHttpsUrl
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -139,8 +149,16 @@ private fun NoteContent(
                 }
             }
         }
-        // 图片轮播
-        if (note.imageList.isNotEmpty()) {
+        // 视频笔记：有播放地址就直接放播放器，不然只能看到封面
+        val videoUrl = note.video?.media?.stream?.h264
+            ?.firstOrNull { !it.masterUrl.isNullOrBlank() }?.masterUrl
+            ?: note.video?.media?.stream?.h265
+                ?.firstOrNull { !it.masterUrl.isNullOrBlank() }?.masterUrl
+        if (!videoUrl.isNullOrBlank()) {
+            // 视频直链也可能是 http://，同样要升到 https，否则会被明文策略拦掉
+            item { VideoPlayer(url = videoUrl.toHttpsUrl()) }
+        } else if (note.imageList.isNotEmpty()) {
+            // 图片轮播
             item {
                 val pager = rememberPagerState(pageCount = { note.imageList.size })
                 Box(Modifier.fillMaxWidth().height(420.dp)) {
@@ -285,5 +303,41 @@ private fun NoteContent(
         }
 
         item { Box(Modifier.height(24.dp)) }
+    }
+}
+
+/**
+ * 视频笔记的播放器。
+ *
+ * 直接用系统的 VideoView：视频是 mp4 直链，不需要额外依赖，
+ * 比起为了播放引一整套 ExoPlayer 更轻。
+ */
+@Composable
+private fun VideoPlayer(url: String) {
+    var player by remember { mutableStateOf<VideoView?>(null) }
+    DisposableEffect(url) {
+        onDispose {
+            runCatching { player?.stopPlayback() }
+            player = null
+        }
+    }
+    key(url) {
+        AndroidView(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(420.dp)
+                .background(Color.Black),
+            factory = { ctx ->
+                VideoView(ctx).apply {
+                    setMediaController(MediaController(ctx).also { it.setAnchorView(this) })
+                    setVideoURI(Uri.parse(url))
+                    setOnPreparedListener { mp ->
+                        mp.isLooping = true
+                        start()
+                    }
+                    player = this
+                }
+            },
+        )
     }
 }

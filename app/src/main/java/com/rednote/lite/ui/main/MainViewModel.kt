@@ -6,9 +6,36 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import com.rednote.lite.RedNoteApp
 import com.rednote.lite.data.model.FeedItem
+import com.rednote.lite.data.sign.UserProfile
 import com.rednote.lite.util.AppLog
 
 enum class FeedMode { HOME, SEARCH }
+
+/**
+ * 首页筛选条件。
+ *
+ * 只是本地过滤（不重新请求），所以调参是即时的。
+ */
+data class FeedFilter(
+    val keyword: String = "",
+    val minLikes: Int = 0,
+    val minComments: Int = 0,
+) {
+    val active: Boolean get() = keyword.isNotBlank() || minLikes > 0 || minComments > 0
+
+    companion object {
+        /** "1.2万" / "2750" / "" → 数值 */
+        fun parseCount(raw: String?): Int {
+            val v = raw?.trim().orEmpty()
+            if (v.isEmpty()) return 0
+            return when {
+                v.endsWith("万") -> ((v.dropLast(1).toDoubleOrNull() ?: 0.0) * 10_000).toInt()
+                v.endsWith("w", true) -> ((v.dropLast(1).toDoubleOrNull() ?: 0.0) * 10_000).toInt()
+                else -> v.toIntOrNull() ?: 0
+            }
+        }
+    }
+}
 
 /**
  * 首页/搜索的数据装载。
@@ -44,6 +71,31 @@ class MainViewModel : ViewModel() {
 
     /** 最近一次失败的真实原因（HTTP 码 / 业务 code），用于界面展示。 */
     val lastError: String get() = api.lastError
+
+    /** 本地筛选条件。 */
+    var filter by mutableStateOf(FeedFilter())
+        private set
+
+    fun setFilter(value: FeedFilter) {
+        filter = value
+    }
+
+    /** 实际展示的列表：套用筛选条件后的结果。 */
+    val visibleItems: List<FeedItem>
+        get() {
+            val f = filter
+            if (!f.active) return items
+            val keyword = f.keyword.trim()
+            return items.filter { item ->
+                val card = item.noteCard
+                val text = card?.displayTitle ?: card?.title ?: card?.desc ?: ""
+                val likes = FeedFilter.parseCount(card?.interactInfo?.likedCount)
+                val comments = FeedFilter.parseCount(card?.interactInfo?.commentCount)
+                (keyword.isEmpty() || text.contains(keyword, ignoreCase = true)) &&
+                    likes >= f.minLikes &&
+                    comments >= f.minComments
+            }
+        }
 
     private var cursor = ""
     /** 上次是按哪组条件加载的，用来跳过「返回详情页」这种无意义重取。 */
@@ -131,12 +183,24 @@ class MainViewModel : ViewModel() {
     suspend fun refreshProfile() {
         val app = RedNoteApp.instance
         val hasCookie = app.signEngine.hasLoginSession()
-        val profile = app.signEngine.readUserInfo()
+        var profile = app.signEngine.readUserInfo()
+
+        // 页面里的 __INITIAL_STATE__ 有时只给昵称不给头像，退回接口再取一次
+        if (profile == null || profile.avatar.isBlank()) {
+            val me = api.selfInfo()
+            if (me != null && !me.guest) {
+                profile = UserProfile(
+                    nickname = profile?.nickname?.ifBlank { me.nickname } ?: me.nickname,
+                    avatar = profile?.avatar?.ifBlank { me.avatarUrl.orEmpty() } ?: me.avatarUrl.orEmpty(),
+                )
+            }
+        }
+
         AppLog.d(
             "Profile",
             "cookie=$hasCookie user=${profile?.nickname} avatarLen=${profile?.avatar?.length ?: 0}",
         )
-        if (profile != null) {
+        if (profile != null && (profile.nickname.isNotBlank() || profile.avatar.isNotBlank())) {
             app.updateProfile(profile.nickname, profile.avatar)
         } else if (!hasCookie) {
             app.clearProfile()

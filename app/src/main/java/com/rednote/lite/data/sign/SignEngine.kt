@@ -310,7 +310,7 @@ class SignEngine(private val context: Context) {
                     if (!u.userId && !u.nickname) return JSON.stringify({error:'anonymous'});
                     return JSON.stringify({
                         nickname: u.nickname || '',
-                        avatar: u.image || u.avatar || u.avatarUrl || '',
+                        avatar: u.image || u.images || u.avatar || u.avatarUrl || '',
                         userId: u.userId || ''
                     });
                 } catch(e) { return JSON.stringify({error: '' + e}); }

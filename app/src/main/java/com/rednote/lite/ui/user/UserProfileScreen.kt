@@ -209,7 +209,7 @@ private fun ProfileHeader(userId: String, nickname: String, avatar: String) {
 
 @Composable
 private fun NoteTile(note: UserNoteItem, onClick: () -> Unit) {
-    val cover = note.cover?.bestUrl
+    val cover = note.bestCover
     androidx.compose.material3.Surface(
         onClick = onClick,
         shape = RoundedCornerShape(12.dp),

@@ -220,18 +220,27 @@ data class FollowingData(
     val items: List<FollowUser> = emptyList(),
 )
 
+/**
+ * 关注列表里的一项。
+ *
+ * 注意 `intimacy_list` 的字段名和别处都不一样：用户 id 叫 `rid`（24 位十六进制），
+ * 还有一个 `userid` 是「rid_哈希」的形式，头像叫 `images` 而不是 image/avatar。
+ */
 @Serializable
 data class FollowUser(
-    @SerialName("user_id") val userId: String = "",
+    @SerialName("rid") val rid: String = "",
+    @SerialName("userid") val userid: String = "",
     val nickname: String = "",
+    @SerialName("images") val images: String? = null,
     @SerialName("image") val image: String? = null,
-    @SerialName("avatar") val avatar: String? = null,
     val desc: String? = null,
-    @SerialName("red_id") val redId: String? = null,
-    @SerialName("xsec_token") val xsecToken: String? = null,
 ) {
+    /** user_posted 要的是 24 位 user_id，也就是 rid。 */
+    val userId: String
+        get() = rid.ifBlank { userid.substringBefore('_') }
+
     val avatarUrl: String?
-        get() = (image?.takeIf { it.isNotBlank() } ?: avatar?.takeIf { it.isNotBlank() })?.toHttpsUrl()
+        get() = (images?.takeIf { it.isNotBlank() } ?: image?.takeIf { it.isNotBlank() })?.toHttpsUrl()
 }
 
 @Serializable
@@ -247,9 +256,31 @@ data class UserNoteItem(
     @SerialName("display_title") val displayTitle: String? = null,
     val type: String? = null,
     val cover: Cover? = null,
+    @SerialName("cover_info") val coverInfo: Cover? = null,
+    @SerialName("note_card") val noteCard: NoteCard? = null,
     @SerialName("interact_info") val interactInfo: InteractInfo? = null,
     @SerialName("xsec_token") val xsecToken: String? = null,
-)
+) {
+    /** user_posted 的封面字段位置不固定，几个可能的地方都试一下。 */
+    val bestCover: String?
+        get() = cover?.bestUrl ?: coverInfo?.bestUrl ?: noteCard?.cover?.bestUrl
+}
+
+/** 当前登录用户（/api/sns/web/v2/user/me）。 */
+@Serializable
+data class SelfInfo(
+    @SerialName("user_id") val userId: String = "",
+    val nickname: String = "",
+    @SerialName("image") val image: String? = null,
+    @SerialName("images") val images: String? = null,
+    @SerialName("avatar") val avatar: String? = null,
+    val guest: Boolean = false,
+) {
+    val avatarUrl: String?
+        get() = (image?.takeIf { it.isNotBlank() }
+            ?: images?.takeIf { it.isNotBlank() }
+            ?: avatar?.takeIf { it.isNotBlank() })?.toHttpsUrl()
+}
 
 // ---------------- 通用 ----------------
 

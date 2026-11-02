@@ -26,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -54,6 +55,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -83,6 +85,7 @@ fun MainScreen(
     var query by rememberSaveable { mutableStateOf("") }
     var retryKey by rememberSaveable { mutableStateOf(0) }
     var tab by rememberSaveable { mutableStateOf(TAB_HOME) }
+    var showFilter by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val gridState = rememberLazyGridState()
 
@@ -145,7 +148,26 @@ fun MainScreen(
                 onLogin = onLogin,
                 onOpenLogs = onOpenLogs,
                 onOpenSettings = onOpenSettings,
+                onOpenFilter = { showFilter = true },
             )
+
+            val visible = vm.visibleItems
+
+            // 筛选生效时给一条可见的提示，否则用户会以为笔记丢了
+            if (vm.filter.active) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "筛选中 · ${visible.size}/${vm.items.size} 条",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { vm.setFilter(FeedFilter()) }) { Text("清除筛选") }
+                }
+            }
 
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 PullToRefreshBox(
@@ -166,18 +188,23 @@ fun MainScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.fillMaxSize(),
                         ) {
-                            if (vm.items.isEmpty()) {
+                            if (visible.isEmpty()) {
                                 item(span = { GridItemSpan(maxLineSpan) }) {
                                     StatusBlock(
                                         error = vm.error,
+                                        emptyText = if (vm.filter.active) {
+                                            "没有符合筛选条件的笔记"
+                                        } else {
+                                            "暂无内容"
+                                        },
                                         onRetry = { retryKey++ },
                                         onLogin = onLogin,
                                         onOpenLogs = onOpenLogs,
                                     )
                                 }
                             } else {
-                                items(vm.items.size) { index ->
-                                    val item = vm.items[index]
+                                items(visible.size) { index ->
+                                    val item = visible[index]
                                     val token = item.xsecToken ?: item.noteCard?.xsecToken ?: ""
                                     NoteCardView(item = item, onClick = { onOpenNote(item.id, token) })
                                 }
@@ -225,6 +252,87 @@ fun MainScreen(
             )
         }
     }
+
+    if (showFilter) {
+        FilterDialog(
+            initial = vm.filter,
+            onDismiss = { showFilter = false },
+            onApply = {
+                vm.setFilter(it)
+                showFilter = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun FilterDialog(
+    initial: FeedFilter,
+    onDismiss: () -> Unit,
+    onApply: (FeedFilter) -> Unit,
+) {
+    var keyword by remember { mutableStateOf(initial.keyword) }
+    var likes by remember { mutableStateOf(if (initial.minLikes > 0) initial.minLikes.toString() else "") }
+    var comments by remember {
+        mutableStateOf(if (initial.minComments > 0) initial.minComments.toString() else "")
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("筛选笔记") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = keyword,
+                    onValueChange = { keyword = it },
+                    label = { Text("关键词（标题/正文）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = likes,
+                    onValueChange = { input -> likes = input.filter { it.isDigit() } },
+                    label = { Text("最低点赞数") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                )
+                OutlinedTextField(
+                    value = comments,
+                    onValueChange = { input -> comments = input.filter { it.isDigit() } },
+                    label = { Text("最低评论数") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                )
+                Text(
+                    "只对已加载的笔记生效，不会重新请求",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onApply(
+                        FeedFilter(
+                            keyword = keyword,
+                            minLikes = likes.toIntOrNull() ?: 0,
+                            minComments = comments.toIntOrNull() ?: 0,
+                        ),
+                    )
+                },
+            ) { Text("应用") }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = { onApply(FeedFilter()) }) { Text("清除") }
+                TextButton(onClick = onDismiss) { Text("取消") }
+            }
+        },
+    )
 }
 
 @Composable
@@ -312,6 +420,18 @@ private fun FollowRow(user: FollowUser, onClick: () -> Unit) {
                     )
                 }
             }
+            // 右侧状态标（对应网页上的「已关注」）
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+            ) {
+                Text(
+                    "已关注",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
         }
     }
 }
@@ -319,6 +439,7 @@ private fun FollowRow(user: FollowUser, onClick: () -> Unit) {
 @Composable
 private fun StatusBlock(
     error: String?,
+    emptyText: String = "暂无内容",
     onRetry: () -> Unit,
     onLogin: () -> Unit,
     onOpenLogs: () -> Unit,
@@ -329,7 +450,7 @@ private fun StatusBlock(
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             if (error == null) {
-                Text("暂无内容", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(emptyText, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 Text("内容加载失败", style = MaterialTheme.typography.titleSmall)
                 Text(
@@ -364,6 +485,7 @@ private fun SearchBar(
     onLogin: () -> Unit,
     onOpenLogs: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenFilter: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
 
@@ -417,6 +539,13 @@ private fun SearchBar(
                             )
                         }
                         HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("筛选") },
+                            onClick = {
+                                menuOpen = false
+                                onOpenFilter()
+                            },
+                        )
                         DropdownMenuItem(
                             text = { Text("设置") },
                             onClick = {
