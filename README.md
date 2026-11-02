@@ -100,7 +100,7 @@ keystore.key.password=<你的密码>
 推送到 `main` 或打 tag（`v*`）时，GitHub Actions 会自动：
 1. 从 Secrets 还原签名配置
 2. 配置 JDK 17 + Android SDK 36
-3. 构建 release + debug APK
+3. 构建 release APK
 4. 如果是 tag 推送，自动创建 Release 并上传 APK
 
 ## 目录说明

@@ -73,11 +73,14 @@ data class VideoInfo(
 data class UserBrief(
     @SerialName("user_id") val userId: String = "",
     val nickname: String = "",
-    val avatar: String? = null,
+    // 评论 / 详情接口的头像字段叫 image，部分列表接口叫 avatar，两个都收
+    @SerialName("image") val image: String? = null,
+    @SerialName("avatar") val avatar: String? = null,
     @SerialName("xsec_token") val xsecToken: String? = null,
 ) {
     /** 头像也可能是 http://，统一升到 https 才不会被明文策略拦掉。 */
-    val avatarUrl: String? get() = avatar?.toHttpsUrl()
+    val avatarUrl: String?
+        get() = (image?.takeIf { it.isNotBlank() } ?: avatar?.takeIf { it.isNotBlank() })?.toHttpsUrl()
 }
 
 @Serializable

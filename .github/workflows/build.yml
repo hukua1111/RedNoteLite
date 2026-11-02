@@ -63,10 +63,6 @@ jobs:
       - name: Build release APK
         run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
-        continue-on-error: true
-
       - name: Collect artifacts
         run: |
           mkdir -p artifacts

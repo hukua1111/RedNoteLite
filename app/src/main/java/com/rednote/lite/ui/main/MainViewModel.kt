@@ -18,6 +18,11 @@ enum class FeedMode { HOME, SEARCH }
  */
 class MainViewModel : ViewModel() {
 
+    companion object {
+        /** 下拉刷新时一次最多插入多少条新内容。 */
+        private const val REFRESH_BATCH = 10
+    }
+
     private val api = RedNoteApp.instance.api
 
     var items by mutableStateOf<List<FeedItem>>(emptyList())
@@ -76,19 +81,33 @@ class MainViewModel : ViewModel() {
         loading = false
     }
 
-    /** 下拉刷新：始终重取第一页。 */
+    /** 下拉刷新：首页只把新内容插到最前面，原有内容原样留在后面。 */
     suspend fun refresh() {
         if (refreshing) return
         refreshing = true
-        cursor = ""
-        val result = fetch("")
-        if (result == null) {
-            error = lastError.ifBlank { "未知错误" }
+        if (mode == FeedMode.HOME && items.isNotEmpty()) {
+            // 首页：取回第一页，挑出列表里还没有的条目，最多插 10 条
+            val result = api.homeFeed("")
+            if (result == null) {
+                error = lastError.ifBlank { "未知错误" }
+            } else {
+                val existing = items.mapTo(HashSet()) { it.id }
+                val fresh = result.items.filterNot { it.id in existing }.take(REFRESH_BATCH)
+                if (fresh.isNotEmpty()) items = fresh + items
+                error = null
+                // 不动 cursor / hasMore：翻页仍从原来的位置继续
+            }
         } else {
-            items = result.first
-            cursor = result.second
-            hasMore = cursor.isNotEmpty()
-            error = null
+            cursor = ""
+            val result = fetch("")
+            if (result == null) {
+                error = lastError.ifBlank { "未知错误" }
+            } else {
+                items = result.first
+                cursor = result.second
+                hasMore = cursor.isNotEmpty()
+                error = null
+            }
         }
         refreshing = false
     }
