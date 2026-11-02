@@ -35,8 +35,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.rednote.lite.RedNoteApp
 import com.rednote.lite.data.sign.SignEngine
 
+private const val LOGIN_URL = "https://www.xiaohongshu.com/explore"
+
 /**
- * 登录页：加载小红书网页版，用户扫码或账号密码登录后，
+ * 登录页：以桌面版 UA 加载小红书 PC 网页版，用户扫码或账号密码登录后，
  * 我们直接从 WebView 的 Cookie 里取 `web_session`。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -81,7 +83,15 @@ fun LoginScreen(onClose: () -> Unit) {
                             settings.javaScriptEnabled = true
                             settings.domStorageEnabled = true
                             settings.databaseEnabled = true
-                            settings.userAgentString = SignEngine.USER_AGENT
+                            // 桌面版 UA：未登录访问 /explore 时服务端会 302 到 /login，
+                            // 直接进入 PC 版登录页（扫码 / 手机号 / 账号密码都可用）
+                            settings.userAgentString = SignEngine.DESKTOP_USER_AGENT
+                            // PC 站点自带窄屏断点，这里保证没有 viewport 的页面也能铺满并支持缩放
+                            settings.useWideViewPort = true
+                            settings.loadWithOverviewMode = true
+                            settings.setSupportZoom(true)
+                            settings.builtInZoomControls = true
+                            settings.displayZoomControls = false
                             CookieManager.getInstance().setAcceptCookie(true)
                             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                             webViewClient = object : WebViewClient() {
@@ -101,7 +111,7 @@ fun LoginScreen(onClose: () -> Unit) {
                                     progress.value = newProgress / 100f
                                 }
                             }
-                            loadUrl("https://www.xiaohongshu.com/explore")
+                            loadUrl(LOGIN_URL)
                         }
                     },
                 )

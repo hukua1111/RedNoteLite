@@ -42,6 +42,14 @@ class SignEngine(private val context: Context) {
         const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+
+        /**
+         * 桌面版 UA：登录页用它加载 PC 版网页，避免被引导去下载 App，
+         * 同时和接口签名里声明的 x2=PC / x1=xhs-pc-web 保持一致。
+         */
+        const val DESKTOP_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     }
 
     private val main = Handler(Looper.getMainLooper())
