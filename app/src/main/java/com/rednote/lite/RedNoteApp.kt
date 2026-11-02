@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import com.rednote.lite.data.remote.XhsApi
 import com.rednote.lite.data.sign.SignEngine
+import com.rednote.lite.util.CacheManager
 
 /**
  * 全局单例容器（规模小，故意不引入 DI 框架，保持构建轻量）。
@@ -54,6 +55,10 @@ class RedNoteApp : Application() {
         instance = this
         signEngine = SignEngine(this)
         api = XhsApi(signEngine)
+        // 每次启动清一次图片缓存；放后台线程，别拖慢冷启动
+        Thread {
+            CacheManager.clearAll(this)
+        }.start()
     }
 
     companion object {

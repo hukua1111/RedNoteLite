@@ -64,6 +64,8 @@ import coil3.compose.AsyncImage
 import com.rednote.lite.data.model.Comment
 import com.rednote.lite.data.model.NoteDetailCard
 import com.rednote.lite.ui.common.LoadState
+import com.rednote.lite.util.MediaDownloader
+import com.rednote.lite.util.stripTopicTags
 import com.rednote.lite.util.toHttpsUrl
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -141,6 +143,7 @@ private fun NoteContent(
     comments: List<Comment>,
     onOpenUser: (String, String, String) -> Unit,
 ) {
+    val context = LocalContext.current
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         // 卡片拿回来是空的：给一句明确提示，而不是留一整屏白
         if (note.imageList.isEmpty() && note.title.isNullOrBlank() && note.desc.isNullOrBlank()) {
@@ -174,7 +177,22 @@ private fun NoteContent(
                             model = img.bestUrl,
                             contentDescription = null,
                             contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                // 长按图片下载
+                                .pointerInput(img.bestUrl) {
+                                    detectTapGestures(
+                                        onLongPress = {
+                                            val link = img.bestUrl ?: return@detectTapGestures
+                                            val ext = MediaDownloader.extensionOf(link, "jpg")
+                                            MediaDownloader.enqueue(
+                                                context,
+                                                link,
+                                                "rednote_${note.noteId}_${page + 1}.$ext",
+                                            )
+                                        },
+                                    )
+                                },
                         )
                     }
                     if (note.imageList.size > 1) {
@@ -205,9 +223,11 @@ private fun NoteContent(
                         fontWeight = FontWeight.Bold,
                     )
                 }
-                if (!note.desc.isNullOrBlank()) {
+                // 正文里内嵌的 #xxx[话题]# 和下面的标签胶囊是同一批话题，去掉避免重复
+                val descText = note.desc?.stripTopicTags().orEmpty()
+                if (descText.isNotBlank()) {
                     Text(
-                        note.desc,
+                        descText,
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(top = 8.dp),
                     )
@@ -390,22 +410,28 @@ private fun VideoPlayer(url: String) {
                         },
                         onPress = { offset ->
                             suppressTap = false
-                            val onRight = offset.x > size.width * 0.55f
-                            var boosted = false
-                            val job = if (onRight) {
-                                scope.launch {
-                                    delay(350)
-                                    boosted = true
-                                    suppressTap = true
+                            val onRight = offset.x > size.width * 0.6f
+                            var fired = false
+                            val job = scope.launch {
+                                // 右侧长按加速；中间/左侧长按下载
+                                delay(if (onRight) 350 else 600)
+                                fired = true
+                                suppressTap = true
+                                if (onRight) {
                                     boosting = true
                                     runCatching { player.setPlaybackSpeed(2f) }
+                                } else {
+                                    val ext = MediaDownloader.extensionOf(url, "mp4")
+                                    MediaDownloader.enqueue(
+                                        context,
+                                        url,
+                                        "rednote_video_${System.currentTimeMillis()}.$ext",
+                                    )
                                 }
-                            } else {
-                                null
                             }
                             tryAwaitRelease()
                             job?.cancel()
-                            if (boosted) {
+                            if (onRight && fired) {
                                 boosting = false
                                 runCatching { player.setPlaybackSpeed(1f) }
                             }

@@ -9,6 +9,7 @@ import com.rednote.lite.RedNoteApp
 import com.rednote.lite.data.model.FeedItem
 import com.rednote.lite.data.sign.UserProfile
 import com.rednote.lite.util.AppLog
+import com.rednote.lite.util.CacheManager
 
 enum class FeedMode { HOME, SEARCH }
 
@@ -75,6 +76,8 @@ class MainViewModel : ViewModel() {
         private const val REFRESH_BATCH = 10
         /** 为了凑够新内容，一次刷新最多请求几页。 */
         private const val MAX_REFRESH_FETCH = 2
+        /** 列表最多保留多少条笔记，超出就把最早的丢掉。 */
+        private const val MAX_ITEMS = 70
 
         private const val KEY_KEYWORD = "keyword"
         private const val KEY_LIKES = "min_likes"
@@ -199,6 +202,7 @@ class MainViewModel : ViewModel() {
             if (collected.isNotEmpty()) {
                 items = collected.take(REFRESH_BATCH) + items
                 error = null
+                trimOldest()
             } else {
                 AppLog.d("MainViewModel", "refresh: 没有可插入的新内容")
             }
@@ -231,6 +235,19 @@ class MainViewModel : ViewModel() {
             AppLog.w("MainViewModel", "loadMore failed: $lastError")
         }
         loadingMore = false
+    }
+
+    /**
+     * 列表超过 [MAX_ITEMS] 时丢掉最早的一批笔记，
+     * 顺手把它们封面图的磁盘缓存删掉，避免缓存无限长。
+     */
+    private fun trimOldest() {
+        if (items.size <= MAX_ITEMS) return
+        val removed = items.drop(MAX_ITEMS)
+        items = items.take(MAX_ITEMS)
+        val urls = removed.mapNotNull { it.noteCard?.cover?.bestUrl }
+        CacheManager.evict(RedNoteApp.instance, urls)
+        AppLog.d("MainViewModel", "trimOldest: 移除 ${removed.size} 条，清理 ${urls.size} 张缓存")
     }
 
     /** 读取当前登录用户，供首页右上角展示头像。 */
