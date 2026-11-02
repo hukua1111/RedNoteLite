@@ -71,16 +71,37 @@ data/
 
 ### 签名
 
-仓库内置固定 keystore（`keystore/rednote.jks`），保证每次构建的 APK 签名一致，可直接覆盖安装升级。
+本项目使用固定 keystore（`keystore/rednote.jks`）签名，保证每次构建的 APK 签名一致，可直接覆盖安装升级。
 
-> ⚠️ 该 keystore 是公开的，仅用于本项目自用分发。**不要**用它签名其它应用。
+密钥**不再随仓库分发**，CI 构建时由 GitHub Actions Secrets 还原（见 `.github/workflows/build.yml` 的 `Prepare signing config` 步骤）。请在本仓库 **Settings → Secrets and variables → Actions** 中配置：
+
+| Secret | 说明 |
+|---|---|
+| `KEYSTORE_JKS_BASE64` | `keystore/rednote.jks` 的 base64 内容（`base64 -w0 keystore/rednote.jks`） |
+| `KEYSTORE_PASSWORD` | keystore 密码（同时用作 key 密码） |
+| `KEYSTORE_ALIAS` | 密钥别名，默认 `rednote` |
+
+本地构建时，在**项目根目录**自行创建 `keystore.properties`（已被 `.gitignore` 忽略）：
+
+```properties
+keystore.file=keystore/rednote.jks
+keystore.password=<你的密码>
+keystore.alias=rednote
+keystore.key.password=<你的密码>
+```
+
+> 🔒 `keystore.properties` 与 `*.jks` 一律不得提交到仓库。
+> ⚠️ **不要**用该 keystore 签名其它应用。
 
 ### CI
 
 推送到 `main` 或打 tag（`v*`）时，GitHub Actions 会自动：
-1. 配置 JDK 17 + Android SDK 36
-2. 构建 release + debug APK
-3. 如果是 tag 推送，自动创建 Release 并上传 APK
+1. 从 Secrets 还原签名配置
+2. 配置 JDK 17 + Android SDK 36
+3. 构建 release + debug APK
+4. 如果是 tag 推送，自动创建 Release 并上传 APK
+
+> 注：仓库为私有仓库，Actions 会消耗账户的免费额度。
 
 ## 目录说明
 

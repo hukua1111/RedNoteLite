@@ -18,6 +18,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 签名密钥不随仓库分发：构建前从 Secrets 还原 keystore.properties 与 jks。
+      # 需要配置的 Secrets：KEYSTORE_JKS_BASE64 / KEYSTORE_PASSWORD / KEYSTORE_ALIAS
+      - name: Prepare signing config
+        env:
+          KEYSTORE_JKS_BASE64: ${{ secrets.KEYSTORE_JKS_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+        run: |
+          if [ -z "$KEYSTORE_JKS_BASE64" ]; then
+            echo "::warning::KEYSTORE_JKS_BASE64 未配置，暂时回退使用仓库内的 keystore（过渡状态）"
+            exit 0
+          fi
+          mkdir -p keystore
+          printf '%s' "$KEYSTORE_JKS_BASE64" | base64 -d > keystore/rednote.jks
+          cat > keystore.properties <<EOF
+          keystore.file=keystore/rednote.jks
+          keystore.password=${KEYSTORE_PASSWORD}
+          keystore.alias=${KEYSTORE_ALIAS:-rednote}
+          keystore.key.password=${KEYSTORE_PASSWORD}
+          EOF
+          echo "签名配置已从 Secrets 注入（alias=${KEYSTORE_ALIAS:-rednote}）"
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
