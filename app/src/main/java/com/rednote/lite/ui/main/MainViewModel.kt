@@ -1,0 +1,25 @@
+package com.rednote.lite.ui.main
+
+import com.rednote.lite.RedNoteApp
+import com.rednote.lite.data.model.FeedItem
+
+/**
+ * 首页/搜索的数据装载。返回 (新增条目, 下一页 cursor)。
+ */
+class MainViewModel {
+
+    private val api = RedNoteApp.instance.api
+
+    suspend fun homeFeed(cursor: String): Pair<List<FeedItem>, String>? {
+        val data = api.homeFeed(cursor) ?: return null
+        return data.items to (data.cursor ?: "")
+    }
+
+    suspend fun search(keyword: String, cursor: String): Pair<List<FeedItem>, String>? {
+        // search 接口用 page 分页；cursor 里存的是页码
+        val page = cursor.toIntOrNull() ?: 1
+        val data = api.searchNotes(keyword, page) ?: return null
+        val next = if (data.hasMore) (page + 1).toString() else ""
+        return data.items to next
+    }
+}
