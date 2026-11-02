@@ -1,9 +1,14 @@
 package com.rednote.lite.ui.detail
 
 import android.net.Uri
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -30,7 +36,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -42,12 +47,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -55,6 +62,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -68,7 +76,7 @@ import com.rednote.lite.util.MediaDownloader
 import com.rednote.lite.util.stripTopicTags
 import com.rednote.lite.util.toHttpsUrl
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -144,6 +152,17 @@ private fun NoteContent(
     onOpenUser: (String, String, String) -> Unit,
 ) {
     val context = LocalContext.current
+    // 长按只负责「问一下」，确认后才真下载
+    var pendingDownload by remember { mutableStateOf<DownloadRequest?>(null) }
+
+    pendingDownload?.let { req ->
+        ConfirmDownloadDialog(
+            title = req.title,
+            onConfirm = { MediaDownloader.enqueue(context, req.url, req.fileName) },
+            onDismiss = { pendingDownload = null },
+        )
+    }
+
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         // 卡片拿回来是空的：给一句明确提示，而不是留一整屏白
         if (note.imageList.isEmpty() && note.title.isNullOrBlank() && note.desc.isNullOrBlank()) {
@@ -185,10 +204,10 @@ private fun NoteContent(
                                         onLongPress = {
                                             val link = img.bestUrl ?: return@detectTapGestures
                                             val ext = MediaDownloader.extensionOf(link, "jpg")
-                                            MediaDownloader.enqueue(
-                                                context,
-                                                link,
-                                                "rednote_${note.noteId}_${page + 1}.$ext",
+                                            pendingDownload = DownloadRequest(
+                                                title = "下载这张图片？",
+                                                url = link,
+                                                fileName = "rednote_${note.noteId}_${page + 1}.$ext",
                                             )
                                         },
                                     )
@@ -335,8 +354,12 @@ private fun NoteContent(
 /**
  * 视频笔记的播放器。
  *
- * 底层用 Media3 ExoPlayer：VideoView 拿不到播放速度控制，长按倍速做不了。
- * 控件自己画 —— 进度条可拖动、单击暂停/播放、长按右半屏 2 倍速。
+ * 底层用 Media3 ExoPlayer，控件全部自绘：
+ *  - 常态只是一条很细的进度条，没有底色遮罩，不挡画面
+ *  - 按住进度条（底部一片区域）才变粗，同时在画面正中显示「当前 / 总时长」
+ *  - 单击画面暂停/播放
+ *  - 长按右半屏 2 倍速，画面正中显示 2×，松手恢复
+ *  - 长按中间/左侧弹确认框后下载
  */
 @Composable
 private fun VideoPlayer(url: String) {
@@ -346,8 +369,7 @@ private fun VideoPlayer(url: String) {
     var isPlaying by remember { mutableStateOf(false) }
     var dragging by remember { mutableStateOf(false) }
     var boosting by remember { mutableStateOf(false) }
-    var suppressTap by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
+    var askDownload by remember { mutableStateOf(false) }
 
     val player = remember(url) {
         ExoPlayer.Builder(context).build().apply {
@@ -380,13 +402,41 @@ private fun VideoPlayer(url: String) {
     LaunchedEffect(player) {
         while (true) {
             if (!dragging) positionMs = player.currentPosition.coerceAtLeast(0L).toInt()
-            delay(250)
+            delay(200)
         }
     }
 
     fun togglePlay() {
         if (player.isPlaying) player.pause() else player.play()
     }
+
+    fun setSpeed(speed: Float) {
+        runCatching { player.setPlaybackSpeed(speed) }
+    }
+
+    if (askDownload) {
+        ConfirmDownloadDialog(
+            title = "下载这个视频？",
+            onConfirm = {
+                val ext = MediaDownloader.extensionOf(url, "mp4")
+                MediaDownloader.enqueue(
+                    context,
+                    url,
+                    "rednote_video_${System.currentTimeMillis()}.$ext",
+                )
+            },
+            onDismiss = { askDownload = false },
+        )
+    }
+
+    val fraction = if (durationMs > 0) {
+        (positionMs.toFloat() / durationMs).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    // 拖动时才长高，松手缩回细线
+    val trackHeight by animateDpAsState(if (dragging) 6.dp else 2.5.dp, label = "trackHeight")
+    val thumbRadius by animateDpAsState(if (dragging) 6.dp else 3.dp, label = "thumbRadius")
 
     Box(Modifier.fillMaxWidth().height(420.dp).background(Color.Black)) {
         AndroidView(
@@ -399,85 +449,147 @@ private fun VideoPlayer(url: String) {
             },
         )
 
-        // 手势层：单击播放/暂停，长按右半屏加速（松手恢复）
+        // 手势层：底部一片是进度条，其余区域单击/长按
         Box(
             Modifier
                 .fillMaxSize()
-                .pointerInput(url) {
-                    detectTapGestures(
-                        onTap = {
-                            if (suppressTap) suppressTap = false else togglePlay()
-                        },
-                        onPress = { offset ->
-                            suppressTap = false
-                            val onRight = offset.x > size.width * 0.6f
-                            var fired = false
-                            val job = scope.launch {
-                                // 右侧长按加速；中间/左侧长按下载
-                                delay(if (onRight) 350 else 600)
-                                fired = true
-                                suppressTap = true
-                                if (onRight) {
-                                    boosting = true
-                                    runCatching { player.setPlaybackSpeed(2f) }
-                                } else {
-                                    val ext = MediaDownloader.extensionOf(url, "mp4")
-                                    MediaDownloader.enqueue(
-                                        context,
-                                        url,
-                                        "rednote_video_${System.currentTimeMillis()}.$ext",
-                                    )
+                .pointerInput(url, durationMs) {
+                    val trackZone = 44.dp.toPx()
+                    val horizontalPadding = 12.dp.toPx()
+                    val touchSlop = viewConfiguration.touchSlop
+
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+
+                        if (down.position.y >= size.height - trackZone) {
+                            // ---------- 拖动进度条 ----------
+                            dragging = true
+                            val usable = (size.width - horizontalPadding * 2).coerceAtLeast(1f)
+                            fun seekAt(x: Float) {
+                                val f = ((x - horizontalPadding) / usable).coerceIn(0f, 1f)
+                                positionMs = (f * (if (durationMs > 0) durationMs else 1)).toInt()
+                            }
+                            seekAt(down.position.x)
+                            var released = false
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) {
+                                    released = true
+                                    break
+                                }
+                                seekAt(change.position.x)
+                                change.consume()
+                            }
+                            if (released) runCatching { player.seekTo(positionMs.toLong()) }
+                            dragging = false
+                        } else {
+                            // ---------- 单击播放/暂停，长按加速或下载 ----------
+                            val onRight = down.position.x > size.width * 0.6f
+                            val longPressMs = if (onRight) 350L else 600L
+                            val start = down.position
+                            val startAt = System.currentTimeMillis()
+                            var longPressed = false
+                            var released = false
+
+                            while (true) {
+                                val elapsed = System.currentTimeMillis() - startAt
+                                if (elapsed >= longPressMs) {
+                                    longPressed = true
+                                    break
+                                }
+                                val event = withTimeoutOrNull(longPressMs - elapsed) {
+                                    awaitPointerEvent()
+                                }
+                                if (event == null) continue
+                                val change = event.changes.firstOrNull { it.id == down.id }
+                                if (change == null) break
+                                if (!change.pressed) {
+                                    released = true
+                                    break
+                                }
+                                // 手指在滑动（列表滚动）或被别人接管：不当成长按
+                                if (change.isConsumed ||
+                                    (change.position - start).getDistance() > touchSlop
+                                ) {
+                                    break
                                 }
                             }
-                            tryAwaitRelease()
-                            job?.cancel()
-                            if (onRight && fired) {
-                                boosting = false
-                                runCatching { player.setPlaybackSpeed(1f) }
+
+                            if (longPressed) {
+                                if (onRight) {
+                                    boosting = true
+                                    setSpeed(2f)
+                                    runCatching { waitForUpOrCancellation() }
+                                    boosting = false
+                                    setSpeed(1f)
+                                } else {
+                                    askDownload = true
+                                    runCatching { waitForUpOrCancellation() }
+                                }
+                            } else if (released) {
+                                togglePlay()
                             }
-                        },
-                    )
+                        }
+                    }
                 },
         )
 
-        Column(
+        // 进度条：常态一条极细的线，背景透明
+        Canvas(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.45f))
-                .padding(horizontal = 12.dp, vertical = 2.dp),
+                .padding(start = 12.dp, end = 12.dp, bottom = 20.dp)
+                .height(14.dp),
         ) {
-            Slider(
-                value = positionMs.toFloat(),
-                onValueChange = { value ->
-                    dragging = true
-                    positionMs = value.toInt()
-                },
-                onValueChangeFinished = {
-                    runCatching { player.seekTo(positionMs.toLong()) }
-                    dragging = false
-                },
-                valueRange = 0f..(if (durationMs > 0) durationMs.toFloat() else 1f),
+            val h = trackHeight.toPx()
+            val cy = size.height / 2f
+            val radius = CornerRadius(h / 2f, h / 2f)
+
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.22f),
+                topLeft = Offset(0f, cy - h / 2f),
+                size = Size(size.width, h),
+                cornerRadius = radius,
             )
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    formatDuration(positionMs),
+            if (fraction > 0f) {
+                drawRoundRect(
                     color = Color.White,
-                    style = MaterialTheme.typography.labelSmall,
+                    topLeft = Offset(0f, cy - h / 2f),
+                    size = Size((size.width * fraction).coerceAtLeast(h), h),
+                    cornerRadius = radius,
                 )
-                Text(
-                    " / ${formatDuration(durationMs)}",
-                    color = Color.White.copy(alpha = 0.7f),
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.weight(1f),
+            }
+            val r = thumbRadius.toPx()
+            drawCircle(
+                color = Color.White,
+                radius = r,
+                center = Offset((size.width * fraction).coerceIn(r, size.width - r), cy),
+            )
+        }
+
+        // 画面正中：拖动时是时间，加速时是倍速（同一个位置）
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            when {
+                boosting -> Text(
+                    "2×",
+                    color = Color.White,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.SemiBold,
                 )
-                if (boosting) {
-                    Text("2×", color = Color.White, style = MaterialTheme.typography.labelMedium)
-                } else {
+                dragging -> Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        if (isPlaying) "暂停" else "播放",
-                        color = Color.White.copy(alpha = 0.7f),
-                        style = MaterialTheme.typography.labelSmall,
+                        formatClock(positionMs),
+                        color = Color.White,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        " / ${formatClock(durationMs)}",
+                        color = Color.White.copy(alpha = 0.55f),
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.SemiBold,
                     )
                 }
             }
@@ -485,7 +597,39 @@ private fun VideoPlayer(url: String) {
     }
 }
 
-private fun formatDuration(ms: Int): String {
+private fun formatClock(ms: Int): String {
     val total = (ms / 1000).coerceAtLeast(0)
-    return "%d:%02d".format(total / 60, total % 60)
+    return "%02d:%02d".format(total / 60, total % 60)
+}
+
+/** 一次待确认的下载。 */
+private data class DownloadRequest(
+    val title: String,
+    val url: String,
+    val fileName: String,
+)
+
+/** 长按下载前的确认框，避免误触。 */
+@Composable
+private fun ConfirmDownloadDialog(
+    title: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text("文件会保存到手机的 Download 目录。") },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onConfirm()
+                    onDismiss()
+                },
+            ) { Text("下载") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
 }
