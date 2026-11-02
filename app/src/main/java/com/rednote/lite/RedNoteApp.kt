@@ -67,7 +67,7 @@ class RedNoteApp : Application(), SingletonImageLoader.Factory {
             .diskCache {
                 DiskCache.Builder()
                     // Coil3 的 directory 要 okio Path，不是 java.io.File
-                    .directory(CacheManager.cacheDir(context).toOkioPath())
+                    .directory(CacheManager.imageCacheDir(context).toOkioPath())
                     // 注意方法名是 maxSizeBytes；不设的话 Coil 默认上限只有 250MB，
                     // 用户设的 2~8G 阈值永远触发不了
                     .maxSizeBytes(MAX_DISK_CACHE_BYTES)

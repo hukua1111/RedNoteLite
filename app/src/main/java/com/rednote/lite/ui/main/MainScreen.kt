@@ -329,6 +329,12 @@ private fun CacheDialog(onDismiss: () -> Unit) {
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
+                    "含图片缓存与网页缓存（不含登录信息）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+                Text(
                     "占用上限 %.1f GB".format(threshold),
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = 14.dp),

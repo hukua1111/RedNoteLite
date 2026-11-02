@@ -1,6 +1,5 @@
 package com.rednote.lite.ui.detail
 
-import android.net.Uri
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -63,14 +62,18 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil3.compose.AsyncImage
 import com.rednote.lite.data.model.Comment
 import com.rednote.lite.data.model.NoteDetailCard
 import com.rednote.lite.ui.common.LoadState
+import com.rednote.lite.util.AppLog
 import com.rednote.lite.util.MediaDownloader
 import com.rednote.lite.util.stripTopicTags
 import com.rednote.lite.util.toHttpsUrl
@@ -370,11 +373,24 @@ private fun VideoPlayer(url: String) {
     var boosting by remember { mutableStateOf(false) }
     var askDownload by remember { mutableStateOf(false) }
 
+    // PlayerView 的引用留着，onDispose 时先解绑再释放（见下面的注释）
+    var playerView by remember { mutableStateOf<PlayerView?>(null) }
+
     val player = remember(url) {
         ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(Uri.parse(url)))
+            setMediaItem(MediaItem.fromUri(url))
             repeatMode = Player.REPEAT_MODE_ONE
             playWhenReady = true
+            // 显式声明媒体音频属性并申请音频焦点：
+            // 不申请的话，系统里其它音频通道（比如隐藏 WebView）可能压住它，表现就是没声音
+            setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .build(),
+                true,
+            )
+            volume = 1f
             prepare()
         }
     }
@@ -390,11 +406,46 @@ private fun VideoPlayer(url: String) {
                     durationMs = player.duration.coerceAtLeast(0L).toInt()
                 }
             }
+
+            /**
+             * 解析出的音轨数量。
+             *
+             * 这里只做一件事：把结果写进日志。audioGroups=0 说明这条流本身没有音轨，
+             * 那就是选流选到了静音预览流，不是播放器的问题。
+             */
+            override fun onTracksChanged(tracks: Tracks) {
+                var audioGroups = 0
+                var maxChannels = 0
+                var sampleMime: String? = null
+                tracks.groups.forEach { group ->
+                    if (group.type == C.TRACK_TYPE_AUDIO) {
+                        audioGroups++
+                        for (i in 0 until group.length) {
+                            val format = group.getTrackFormat(i)
+                            if (format.channelCount > maxChannels) maxChannels = format.channelCount
+                            sampleMime = format.sampleMimeType
+                        }
+                    }
+                }
+                AppLog.d(
+                    "Video",
+                    "tracks: audioGroups=$audioGroups channels=$maxChannels mime=$sampleMime",
+                )
+            }
         }
         player.addListener(listener)
         onDispose {
             player.removeListener(listener)
+            // 退出详情页时，SurfaceView 会把自己那一层留在窗口上，
+            // 只 release 播放器的话最后一帧还能挂好几秒（看起来像画中画）。
+            // 顺序很重要：先解绑 PlayerView，再 stop + clearVideoSurface，最后 release。
+            runCatching {
+                playerView?.player = null
+                player.stop()
+                player.clearVideoSurface()
+            }
             player.release()
+            playerView = null
         }
     }
 
@@ -444,6 +495,7 @@ private fun VideoPlayer(url: String) {
                 PlayerView(ctx).apply {
                     useController = false
                     this.player = player
+                    playerView = this
                 }
             },
         )

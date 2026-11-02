@@ -269,6 +269,10 @@ class XhsApi(private val signEngine: SignEngine) {
                         "title=${card?.title?.length} desc=${card?.desc?.length} " +
                         "tags=${card?.tags?.size}",
                 )
+                // 视频流的选择只靠 audio_bitrate / height，出问题时这行能直接定位
+                card?.video?.media?.stream?.let {
+                    AppLog.d(TAG, "video stream: ${it.debugSummary}")
+                }
                 return resp
             }
             AppLog.w(

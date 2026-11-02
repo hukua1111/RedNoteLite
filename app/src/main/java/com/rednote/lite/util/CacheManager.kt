@@ -5,20 +5,25 @@ import coil3.SingletonImageLoader
 import java.io.File
 
 /**
- * 图片缓存管理（按占用大小回收）。
+ * 缓存管理（按占用大小回收）。
  *
  * 策略：
  *  - 用户设一个上限（2~8 GB），存 SharedPreferences；
  *  - 占用超过上限时，从**最旧**的文件开始删，一直删到上限的 40%；
  *  - 每次启动、改阈值、手动点「立即清理」时都会跑一次。
  *
- * 上限判断放在这里而不是交给 Coil：Coil 自己的 maxSize 是磁盘百分比，
- * 用户想要的是绝对值，所以 ImageLoader 里把 Coil 的上限设成 8G（最大值），
- * 真正的回收由本类负责。
+ * 统计范围（这里是和系统数字对齐的关键）：
+ *  - `cacheDir` 整体（图片缓存只是其中一个子目录）
+ *  - `externalCacheDir`
+ *  - 隐藏 WebView 的 HTTP Cache / GPUCache / CacheStorage
+ *
+ * 只统计 image_cache 的话，应用内显示的数会比系统设置里小一大截——
+ * WebView 缓存才是真正越长越大的那部分。注意 Cookies、Local Storage
+ * 这些**绝不碰**，只清纯缓存目录。
  */
 object CacheManager {
 
-    /** 缓存目录名，必须和 RedNoteApp 里 ImageLoader 的配置一致。 */
+    /** 图片缓存目录名，必须和 RedNoteApp 里 ImageLoader 的配置一致。 */
     const val DIR_NAME = "image_cache"
 
     /** 阈值可选区间（GB）。 */
@@ -49,12 +54,39 @@ object CacheManager {
 
     private fun gbToBytes(gb: Float): Long = (gb.toDouble() * 1024 * 1024 * 1024).toLong()
 
-    fun cacheDir(context: Context): File = File(context.cacheDir, DIR_NAME)
+    /** Coil 的图片缓存目录（ImageLoader 就配在这里）。 */
+    fun imageCacheDir(context: Context): File = File(context.cacheDir, DIR_NAME)
 
-    /** 当前占用字节数。 */
+    /**
+     * 参与统计 / 清理的目录。
+     *
+     * WebView 的数据目录在 `dataDir/app_webview` 下，不在 cacheDir 里，
+     * 只能通过 applicationInfo.dataDir 拼出来（minSdk 23，用不了 Context.dataDir）。
+     * 这里只取纯缓存子目录，Cookies / Local Storage / IndexedDB 一律不碰。
+     */
+    private fun cacheRoots(context: Context): List<File> {
+        val roots = mutableListOf<File>()
+        runCatching { roots += context.cacheDir }
+        runCatching { context.externalCacheDir?.let { roots += it } }
+        runCatching {
+            val base = File(context.applicationInfo.dataDir, "app_webview/Default")
+            listOf("HTTP Cache", "GPUCache", "Service Worker/CacheStorage").forEach { sub ->
+                val dir = File(base, sub)
+                if (dir.exists()) roots += dir
+            }
+        }
+        return roots.filter { it.exists() }
+    }
+
+    /** 当前占用字节数（cacheDir + externalCacheDir + WebView 缓存）。 */
     fun usageBytes(context: Context): Long = runCatching {
-        val dir = cacheDir(context)
-        if (!dir.exists()) 0L else dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        cacheRoots(context).sumOf { root ->
+            if (!root.exists()) {
+                0L
+            } else {
+                root.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+            }
+        }
     }.getOrDefault(0L)
 
     /**
@@ -83,16 +115,18 @@ object CacheManager {
      * 按最后修改时间从旧到新删，直到占用不大于 [targetBytes]。
      */
     private fun trimTo(context: Context, targetBytes: Long): Long {
-        val dir = cacheDir(context)
-        if (!dir.exists()) return 0L
         val files = runCatching {
-            dir.walkTopDown()
-                .filter { it.isFile }
+            cacheRoots(context)
+                .flatMap { root ->
+                    root.walkTopDown()
+                        .filter { it.isFile }
+                        .filterNot { it.name == "journal" || it.name == "journal.tmp" }
+                        .toList()
+                }
                 .sortedBy { it.lastModified() }
-                .toList()
         }.getOrNull() ?: return 0L
 
-        var size = files.sumOf { it.length() }
+        var size = runCatching { files.sumOf { it.length() } }.getOrDefault(0L)
         if (size <= targetBytes) return 0L
 
         var freed = 0L
@@ -113,7 +147,7 @@ object CacheManager {
         return freed
     }
 
-    /** 整个清空（退出登录等场景）。 */
+    /** 整个清空（保留 Cookie，页面下次重新加载而已）。 */
     fun clearAll(context: Context) {
         runCatching {
             val loader = SingletonImageLoader.get(context)

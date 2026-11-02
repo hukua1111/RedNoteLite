@@ -161,10 +161,32 @@ data class VideoStream(
     @SerialName("EF6") val ef6: List<VideoCodec> = emptyList(),
     @SerialName("EF7") val ef7: List<VideoCodec> = emptyList(),
 ) {
-    /** 按清晰度优先取第一个有直链的。EF4≈258p、EF5≈520p，都是 mp4。 */
+    /**
+     * 选一个能播的直链。
+     *
+     * 原来的顺序是 EF5 -> EF4，但实测 EF5 这类低码率流经常是**静音预览流**
+     * （有 audio_codec 但 volume=0），放出来就是有画面没声音。
+     * 现在先挑带音轨的，再在其中取分辨率最高的；全都没音轨才退化为最高分辨率。
+     */
     val bestUrl: String?
-        get() = (ef5 + ef4 + ef6 + ef7 + h264 + h265 + av1)
-            .firstOrNull { !it.masterUrl.isNullOrBlank() }?.masterUrl
+        get() {
+            val all = (ef4 + ef5 + ef6 + ef7 + h264 + h265 + av1)
+                .filter { !it.masterUrl.isNullOrBlank() }
+            if (all.isEmpty()) return null
+            val withAudio = all.filter { it.hasAudio }
+            return (withAudio.ifEmpty { all }).maxByOrNull { it.height }?.masterUrl
+        }
+
+    /** 调试用：把所有流的关键信息打成一行，方便确认选的到底是不是静音流。 */
+    val debugSummary: String
+        get() {
+            val named = listOf("EF4" to ef4, "EF5" to ef5, "EF6" to ef6, "EF7" to ef7)
+            return named.joinToString(" | ") { (name, list) ->
+                val item = list.firstOrNull() ?: return@joinToString "$name=-"
+                "$name=${item.height}p vol=${item.volume} " +
+                    "audio=${item.audioBitrate}/${item.audioCodec ?: "-"}"
+            }
+        }
 }
 
 @Serializable
@@ -175,7 +197,15 @@ data class VideoCodec(
     val height: Int = 0,
     val duration: Int = 0,
     val format: String? = null,
-)
+    /** 网页端每条流都带这个：0 表示静音预览流。 */
+    val volume: Int = 0,
+    @SerialName("audio_bitrate") val audioBitrate: Int = 0,
+    @SerialName("audio_codec") val audioCodec: String? = null,
+    @SerialName("avg_bitrate") val avgBitrate: Int = 0,
+) {
+    /** 有没有音轨数据。 */
+    val hasAudio: Boolean get() = audioBitrate > 0 && !audioCodec.isNullOrBlank()
+}
 
 @Serializable
 data class VideoConsumer(@SerialName("origin_video_key") val originVideoKey: String? = null)
