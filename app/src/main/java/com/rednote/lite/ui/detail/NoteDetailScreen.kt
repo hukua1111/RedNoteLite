@@ -1,8 +1,6 @@
 package com.rednote.lite.ui.detail
 
 import android.net.Uri
-import android.os.Build
-import android.widget.VideoView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -58,6 +56,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import coil3.compose.AsyncImage
 import com.rednote.lite.data.model.Comment
 import com.rednote.lite.data.model.NoteDetailCard
@@ -313,74 +315,69 @@ private fun NoteContent(
 /**
  * 视频笔记的播放器。
  *
- * 用系统 VideoView + 自绘控件：进度条可拖动、单击暂停/播放、长按右半屏 2 倍速。
- * 视频是 mp4 直链，没必要为此引一整套 ExoPlayer。
+ * 底层用 Media3 ExoPlayer：VideoView 拿不到播放速度控制，长按倍速做不了。
+ * 控件自己画 —— 进度条可拖动、单击暂停/播放、长按右半屏 2 倍速。
  */
 @Composable
 private fun VideoPlayer(url: String) {
-    var videoView by remember { mutableStateOf<VideoView?>(null) }
-    var isPlaying by remember { mutableStateOf(false) }
-    var durationMs by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
     var positionMs by remember { mutableIntStateOf(0) }
+    var durationMs by remember { mutableIntStateOf(0) }
+    var isPlaying by remember { mutableStateOf(false) }
     var dragging by remember { mutableStateOf(false) }
     var boosting by remember { mutableStateOf(false) }
     var suppressTap by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    DisposableEffect(url) {
-        onDispose {
-            runCatching { videoView?.stopPlayback() }
-            videoView = null
+    val player = remember(url) {
+        ExoPlayer.Builder(context).build().apply {
+            setMediaItem(MediaItem.fromUri(Uri.parse(url)))
+            repeatMode = Player.REPEAT_MODE_ONE
+            playWhenReady = true
+            prepare()
         }
     }
 
-    // 进度轮询（拖动时不覆盖用户的位置）
-    LaunchedEffect(url) {
-        while (true) {
-            val vv = videoView
-            if (vv != null) {
-                runCatching {
-                    if (vv.duration > 0) durationMs = vv.duration
-                    if (!dragging && vv.isPlaying) positionMs = vv.currentPosition
-                    isPlaying = vv.isPlaying
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    durationMs = player.duration.coerceAtLeast(0L).toInt()
                 }
             }
+        }
+        player.addListener(listener)
+        onDispose {
+            player.removeListener(listener)
+            player.release()
+        }
+    }
+
+    LaunchedEffect(player) {
+        while (true) {
+            if (!dragging) positionMs = player.currentPosition.coerceAtLeast(0L).toInt()
             delay(250)
         }
     }
 
     fun togglePlay() {
-        val vv = videoView ?: return
-        runCatching {
-            if (vv.isPlaying) vv.pause() else vv.start()
-            isPlaying = vv.isPlaying
-        }
-    }
-
-    fun setSpeed(speed: Float) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val vv = videoView ?: return
-        runCatching { vv.setPlaybackParams(vv.playbackParams.setSpeed(speed)) }
+        if (player.isPlaying) player.pause() else player.play()
     }
 
     Box(Modifier.fillMaxWidth().height(420.dp).background(Color.Black)) {
-        key(url) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    VideoView(ctx).apply {
-                        setVideoURI(Uri.parse(url))
-                        setOnPreparedListener { mp ->
-                            mp.isLooping = true
-                            durationMs = mp.duration
-                            start()
-                        }
-                        setOnCompletionListener { isPlaying = false }
-                        videoView = this
-                    }
-                },
-            )
-        }
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                PlayerView(ctx).apply {
+                    useController = false
+                    this.player = player
+                }
+            },
+        )
 
         // 手势层：单击播放/暂停，长按右半屏加速（松手恢复）
         Box(
@@ -401,7 +398,7 @@ private fun VideoPlayer(url: String) {
                                     boosted = true
                                     suppressTap = true
                                     boosting = true
-                                    setSpeed(2f)
+                                    runCatching { player.setPlaybackSpeed(2f) }
                                 }
                             } else {
                                 null
@@ -410,7 +407,7 @@ private fun VideoPlayer(url: String) {
                             job?.cancel()
                             if (boosted) {
                                 boosting = false
-                                setSpeed(1f)
+                                runCatching { player.setPlaybackSpeed(1f) }
                             }
                         },
                     )
@@ -431,7 +428,7 @@ private fun VideoPlayer(url: String) {
                     positionMs = value.toInt()
                 },
                 onValueChangeFinished = {
-                    runCatching { videoView?.seekTo(positionMs) }
+                    runCatching { player.seekTo(positionMs.toLong()) }
                     dragging = false
                 },
                 valueRange = 0f..(if (durationMs > 0) durationMs.toFloat() else 1f),
