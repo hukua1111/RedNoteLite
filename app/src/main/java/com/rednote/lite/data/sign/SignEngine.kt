@@ -5,7 +5,6 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.ViewGroup
-import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -22,8 +21,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.net.URLEncoder
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 
 /**
@@ -44,10 +41,8 @@ class SignEngine(private val context: Context) {
         private const val TAG = "SignEngine"
         private const val HOME_URL = "https://www.xiaohongshu.com/explore"
         private const val ORIGIN = "https://www.xiaohongshu.com"
-        private const val API_ORIGIN = "https://edith.xiaohongshu.com"
         private const val SIGN_TIMEOUT_MS = 15_000L
         private const val READY_TIMEOUT_MS = 25_000L
-        private const val FETCH_TIMEOUT_MS = 25_000L
 
         /**
          * 桌面版 UA：登录页用它加载 PC 版网页，避免被引导去下载 App，
@@ -76,24 +71,6 @@ class SignEngine(private val context: Context) {
     private var pageReady = false
 
     private var readyDeferred = CompletableDeferred<Boolean>()
-
-    /** 页面内 fetch 的等待队列：key 是一次请求的 id。 */
-    private val pendingFetches = ConcurrentHashMap<String, CompletableDeferred<PageFetch?>>()
-
-    /** 暴露给页面 JS 的桥，只用来把 fetch 结果回传，不做任何其它事。 */
-    inner class PageBridge {
-        @JavascriptInterface
-        fun onFetchDone(id: String?, status: String?, body: String?, error: String?) {
-            val deferred = pendingFetches.remove(id) ?: return
-            if (deferred.isCompleted) return
-            if (!error.isNullOrEmpty()) {
-                Log.w(TAG, "page fetch error: $error")
-                deferred.complete(null)
-            } else {
-                deferred.complete(PageFetch(status?.toIntOrNull() ?: 0, body.orEmpty()))
-            }
-        }
-    }
 
     /** 页面里的签名实现，直接复用站点自己的 seccore_signv2 逻辑。 */
     private val signScript = """
@@ -224,8 +201,6 @@ class SignEngine(private val context: Context) {
         }
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
-        // 页面内 fetch 的结果靠这个桥回传
-        wv.addJavascriptInterface(PageBridge(), "Native")
         wv.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
@@ -314,54 +289,6 @@ class SignEngine(private val context: Context) {
         val ok = withTimeoutOrNull(READY_TIMEOUT_MS) { readyDeferred.await() } ?: pageReady
         AppLog.d(TAG, "warmUp done ok=$ok pageReady=$pageReady")
         ok
-    }
-
-    /**
-     * 在页面内直接发起请求。
-     *
-     * 这是最可靠的一条路：请求由站点自己的 JS 发起，X-s 由站点的拦截器补，
-     * Cookie / UA / Referer / a1 全部天然一致。返回 null 表示页面侧失败，
-     * 调用方应退回 [sign] + OkHttp。
-     *
-     * [path] 可以带 query（评论接口是 GET + query 参数）。
-     */
-    suspend fun fetchInPage(
-        path: String,
-        method: String = "POST",
-        bodyJson: String? = null,
-    ): PageFetch? = withContext(Dispatchers.Main) {
-        if (!pageReady && !warmUp()) return@withContext null
-        val wv = ensureWebView()
-        val id = UUID.randomUUID().toString()
-        val deferred = CompletableDeferred<PageFetch?>()
-        pendingFetches[id] = deferred
-        val script = buildString {
-            append("(function(){")
-            append("var id=").append(JSONObject.quote(id)).append(";")
-            append("var url=").append(JSONObject.quote(API_ORIGIN + path)).append(";")
-            append("try{")
-            append("var opt={method:").append(JSONObject.quote(method)).append(",credentials:'include',")
-            append("headers:{'Accept':'application/json, text/plain, */*'}};")
-            if (bodyJson != null) {
-                append("opt.headers['Content-Type']='application/json;charset=UTF-8';")
-                append("opt.body=").append(JSONObject.quote(bodyJson)).append(";")
-            }
-            append("fetch(url,opt)")
-            append(".then(function(r){return r.text().then(function(t){return {s:r.status,t:t};});})")
-            append(".then(function(o){Native.onFetchDone(id,String(o.s),o.t,'');})")
-            append(".catch(function(e){Native.onFetchDone(id,'','',''+e);});")
-            append("}catch(e){Native.onFetchDone(id,'','',''+e);}")
-            append("return 'ok';})()")
-        }
-        wv.evaluateJavascript(script, null)
-        val result = withTimeoutOrNull(FETCH_TIMEOUT_MS) { deferred.await() }
-        pendingFetches.remove(id)
-        if (result == null) {
-            AppLog.w(TAG, "page fetch timeout: $method $path")
-        } else {
-            AppLog.d(TAG, "page fetch $method $path -> HTTP ${result.status} ${result.body.length}B")
-        }
-        result
     }
 
     /**
@@ -492,9 +419,6 @@ class SignEngine(private val context: Context) {
 }
 
 data class SignHeaders(val xs: String, val xt: String, val xSCommon: String, val a1: String)
-
-/** 页面内 fetch 的原始结果。 */
-data class PageFetch(val status: Int, val body: String)
 
 /** 从页面内嵌状态读到的登录用户信息。 */
 data class UserProfile(val nickname: String, val avatar: String)

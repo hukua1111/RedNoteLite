@@ -89,22 +89,9 @@ class XhsApi(private val signEngine: SignEngine) {
         AppLog.d(TAG, "→ $method $pathWithQuery")
         if (!body.isNullOrBlank()) AppLog.d(TAG, "  req: $body")
 
-        // ---- 路线 1：整段请求交给页面内的真实 JS 发起 ----
-        // 这样 X-s 由站点自己的拦截器补，Cookie/UA/Referer/a1 完全一致。
-        if (signed) {
-            val page = runCatching { signEngine.fetchInPage(pathWithQuery, method, body) }.getOrNull()
-            if (page != null && page.status == 200 && page.body.trimStart().startsWith("{")) {
-                AppLog.d(TAG, "← page HTTP ${page.status} ${page.body.length}B: ${page.body}")
-                return@withContext page.body
-            }
-            if (page != null) {
-                AppLog.w(TAG, "page fetch unusable: HTTP ${page.status}: ${page.body.take(300)}")
-            } else {
-                AppLog.w(TAG, "page fetch returned null, fallback to native")
-            }
-        }
-
-        // ---- 路线 2：原生签名 + OkHttp ----
+        // 只用「原生签名 + OkHttp」这一条路。
+        // 曾经试过在页面里 fetch 让站点自己补 X-s，实测站点并不会拦截普通 fetch，
+        // feed / comment 全部返回 406，等于每次白白多打一发注定失败的请求。
         val builder = Request.Builder()
             .url(BASE + pathWithQuery)
             .header("User-Agent", SignEngine.USER_AGENT)

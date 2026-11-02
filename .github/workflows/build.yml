@@ -20,6 +20,7 @@ jobs:
 
       # 签名密钥不随仓库分发：构建前从 Secrets 还原 keystore.properties 与 jks。
       # 需要配置的 Secrets：KEYSTORE_JKS_BASE64 / KEYSTORE_PASSWORD / KEYSTORE_ALIAS
+      # 未配置时（fork、PR）退化为 debug 签名，只用于验证能否编译通过。
       - name: Prepare signing config
         env:
           KEYSTORE_JKS_BASE64: ${{ secrets.KEYSTORE_JKS_BASE64 }}
@@ -27,7 +28,7 @@ jobs:
           KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
         run: |
           if [ -z "$KEYSTORE_JKS_BASE64" ]; then
-            echo "::warning::KEYSTORE_JKS_BASE64 未配置，暂时回退使用仓库内的 keystore（过渡状态）"
+            echo "::warning::未配置 KEYSTORE_JKS_BASE64，本次使用 debug 签名（仅适合验证编译）"
             exit 0
           fi
           mkdir -p keystore
