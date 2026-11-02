@@ -8,7 +8,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -520,12 +519,23 @@ private fun VideoPlayer(url: String) {
                                 if (onRight) {
                                     boosting = true
                                     setSpeed(2f)
-                                    runCatching { waitForUpOrCancellation() }
-                                    boosting = false
-                                    setSpeed(1f)
                                 } else {
                                     askDownload = true
-                                    runCatching { waitForUpOrCancellation() }
+                                }
+                                // 等手指抬起。
+                                // 这里不能包 runCatching / try-catch：AwaitPointerEventScope 是
+                                // @RestrictsSuspension 的，只有 inline 的 suspend lambda
+                                //（withTimeoutOrNull）能调用它的成员；超时也当作结束，
+                                // 保证倍速一定会被恢复。
+                                while (true) {
+                                    val ev = withTimeoutOrNull(10_000L) { awaitPointerEvent() }
+                                    if (ev == null) break
+                                    val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                    if (!ch.pressed) break
+                                }
+                                if (onRight) {
+                                    boosting = false
+                                    setSpeed(1f)
                                 }
                             } else if (released) {
                                 togglePlay()
