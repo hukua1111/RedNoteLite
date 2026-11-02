@@ -1,6 +1,5 @@
 package com.rednote.lite.ui.main
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +27,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -35,11 +35,14 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -49,12 +52,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
 import com.rednote.lite.RedNoteApp
 import com.rednote.lite.data.model.FeedItem
-import com.rednote.lite.ui.common.LoadState
-import com.rednote.lite.ui.common.itemsOrEmpty
+import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     onOpenNote: (String, String) -> Unit,
@@ -62,104 +66,63 @@ fun MainScreen(
     onOpenLogs: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    var query by remember { mutableStateOf("") }        // 输入框内容，每敲一个字都会变
-    var searchTerm by remember { mutableStateOf("") }   // 真正提交给接口的词
-    var mode by remember { mutableStateOf(FeedMode.HOME) }
-    var state by remember { mutableStateOf<LoadState<List<FeedItem>>>(LoadState.Idle) }
-    var cursor by remember { mutableStateOf("") }
-    var hasMore by remember { mutableStateOf(false) }
-    var loadingMore by remember { mutableStateOf(false) }
-    var retryKey by remember { mutableStateOf(0) }
+    // 数据挂在 ViewModel 上：进详情页再返回时界面会重建，状态不会丢，也就不会重新拉流
+    val vm: MainViewModel = viewModel()
 
-    val vm = remember { MainViewModel() }
+    var query by rememberSaveable { mutableStateOf("") }
+    var retryKey by rememberSaveable { mutableStateOf(0) }
+    val scope = rememberCoroutineScope()
     val gridState = rememberLazyGridState()
-    // 登录成功后由 LoginScreen 自增，这里作为 LaunchedEffect 的 key，触发一次重新拉流
+
+    // 登录成功后由 LoginScreen 自增，作为 LaunchedEffect 的 key 触发一次重新拉流
     val authVersion = RedNoteApp.instance.authVersion
-    // 读一下头像状态，登录/刷新后这里会重组
     val avatarUrl = RedNoteApp.instance.avatarUrl
     val nickname = RedNoteApp.instance.nickname
-    // Cookie 不在快照系统里，用 authVersion 当 key 让它跟着登录态一起刷新；
-    // 头像已经拿到也算已登录（避免 Cookie 读不到时按钮又变回「登录」）
     val loggedIn = remember(authVersion, avatarUrl) {
         RedNoteApp.instance.signEngine.hasLoginSession() || avatarUrl.isNotBlank()
     }
 
-    suspend fun load(reset: Boolean) {
-        if (reset) {
-            state = LoadState.Loading
-            cursor = ""
-        } else {
-            if (loadingMore) return
-            loadingMore = true
-        }
-        val existing = state.itemsOrEmpty()
-        val result = when (mode) {
-            FeedMode.HOME -> vm.homeFeed(cursor)
-            FeedMode.SEARCH -> vm.search(searchTerm, cursor)
-        }
-        if (result == null) {
-            if (reset) {
-                // 直接展示真实原因（HTTP 码 / 业务 code），比笼统的「请确认已登录」有用
-                state = LoadState.Error(vm.lastError.ifBlank { "未知错误" })
-            } else {
-                state = LoadState.Success(existing)
-            }
-        } else {
-            state = LoadState.Success(if (reset) result.first else existing + result.first)
-            cursor = result.second
-            hasMore = cursor.isNotEmpty()
-        }
-        loadingMore = false
+    // key 相同就复用已有数据，所以从详情页返回不会再请求一次
+    LaunchedEffect(vm.mode, vm.searchTerm, retryKey, authVersion) {
+        vm.loadIfNeeded("${vm.mode}|${vm.searchTerm}|$retryKey|$authVersion")
     }
 
-    // 只在「模式 / 提交的词 / 重试 / 登录态」变化时重取，
-    // 老实现 key 里带 query，输入框每敲一个字就打一次接口
-    LaunchedEffect(mode, searchTerm, retryKey, authVersion) { load(reset = true) }
-
-    // 登录态变化后同步一次用户信息（头像/昵称）
     LaunchedEffect(authVersion) { vm.refreshProfile() }
 
     LaunchedEffect(gridState) {
         snapshotFlow {
-            // hasMore / loadingMore 必须在 snapshotFlow 内部读，否则取到的是首次组合时的旧值，
-            // 翻页永远不会触发
             Triple(
                 gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0,
                 gridState.layoutInfo.totalItemsCount,
-                hasMore to loadingMore,
+                vm.hasMore,
             )
-        }.collect { (last, total, flags) ->
-            if (flags.first && !flags.second && total > 0 && last >= total - 4) {
-                load(reset = false)
-            }
+        }.collect { (last, total, more) ->
+            if (more && total > 0 && last >= total - 4) vm.loadMore()
         }
     }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            // enableEdgeToEdge 后界面会画到状态栏/导航栏下面，
-            // 这里统一避让安全区，避免顶部搜索栏和状态栏重叠
+            // enableEdgeToEdge 后界面会画到状态栏/导航栏下面，这里统一避让安全区
             .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
         SearchBar(
             query = query,
             onQueryChange = { query = it },
-            active = mode == FeedMode.SEARCH,
+            active = vm.mode == FeedMode.SEARCH,
             avatarUrl = avatarUrl,
             nickname = nickname,
             loggedIn = loggedIn,
             onSubmit = {
                 if (query.isNotBlank()) {
-                    searchTerm = query
-                    mode = FeedMode.SEARCH
+                    vm.submitSearch(query)
                     retryKey++
                 }
             },
             onClear = {
                 query = ""
-                searchTerm = ""
-                mode = FeedMode.HOME
+                vm.clearSearch()
                 retryKey++
             },
             onLogin = onLogin,
@@ -167,58 +130,41 @@ fun MainScreen(
             onOpenSettings = onOpenSettings,
         )
 
-        when (val s = state) {
-            is LoadState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-
-            is LoadState.Error -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(horizontal = 24.dp),
-                ) {
-                    Text("内容加载失败", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        s.message,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 6.dp),
-                    )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.padding(top = 8.dp),
-                    ) {
-                        // 老实现是 state = Idle，但没有任何东西会因为 Idle 去重新加载，
-                        // 点「重试」等于没反应
-                        TextButton(onClick = { retryKey++ }) { Text("重试") }
-                        TextButton(onClick = onLogin) { Text("重新登录") }
-                        TextButton(onClick = onOpenLogs) { Text("查看日志") }
-                    }
+        PullToRefreshBox(
+            isRefreshing = vm.refreshing,
+            onRefresh = { scope.launch { vm.refresh() } },
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            if (vm.loading && vm.items.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
                 }
-            }
-
-            else -> {
-                val items = state.itemsOrEmpty()
-                if (items.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("暂无内容", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                } else {
-                    LazyVerticalGrid(
-                        state = gridState,
-                        columns = GridCells.Fixed(2),
-                        contentPadding = PaddingValues(8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        items(items.size) { index ->
-                            val item = items[index]
+            } else {
+                LazyVerticalGrid(
+                    state = gridState,
+                    columns = GridCells.Fixed(2),
+                    contentPadding = PaddingValues(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    if (vm.items.isEmpty()) {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
+                            StatusBlock(
+                                error = vm.error,
+                                onRetry = { retryKey++ },
+                                onLogin = onLogin,
+                                onOpenLogs = onOpenLogs,
+                            )
+                        }
+                    } else {
+                        items(vm.items.size) { index ->
+                            val item = vm.items[index]
                             // xsec_token 有的接口放在外层、有的塞在 note_card 里，两处都兜一下
                             val token = item.xsecToken ?: item.noteCard?.xsecToken ?: ""
                             NoteCardView(item = item, onClick = { onOpenNote(item.id, token) })
                         }
-                        if (loadingMore) {
+                        if (vm.loadingMore) {
                             item(span = { GridItemSpan(maxLineSpan) }) {
                                 Box(
                                     Modifier.fillMaxWidth().padding(16.dp),
@@ -233,7 +179,40 @@ fun MainScreen(
     }
 }
 
-private enum class FeedMode { HOME, SEARCH }
+@Composable
+private fun StatusBlock(
+    error: String?,
+    onRetry: () -> Unit,
+    onLogin: () -> Unit,
+    onOpenLogs: () -> Unit,
+) {
+    Box(
+        Modifier.fillMaxWidth().padding(top = 96.dp, start = 24.dp, end = 24.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            if (error == null) {
+                Text("暂无内容", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                Text("内容加载失败", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(top = 8.dp),
+                ) {
+                    TextButton(onClick = onRetry) { Text("重试") }
+                    TextButton(onClick = onLogin) { Text("重新登录") }
+                    TextButton(onClick = onOpenLogs) { Text("查看日志") }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun SearchBar(

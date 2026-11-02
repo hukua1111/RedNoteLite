@@ -1,26 +1,114 @@
 package com.rednote.lite.ui.main
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.ViewModel
 import com.rednote.lite.RedNoteApp
 import com.rednote.lite.data.model.FeedItem
 import com.rednote.lite.util.AppLog
 
+enum class FeedMode { HOME, SEARCH }
+
 /**
- * 首页/搜索的数据装载。返回 (新增条目, 下一页 cursor)。
+ * 首页/搜索的数据装载。
+ *
+ * 状态放在 ViewModel 里（作用域是导航条目）：进详情页再返回时 Compose 会重建界面，
+ * 如果状态还挂在 `remember` 上就会丢，于是又拉一次首页——这就是「返回自动刷新」的成因。
  */
-class MainViewModel {
+class MainViewModel : ViewModel() {
 
     private val api = RedNoteApp.instance.api
+
+    var items by mutableStateOf<List<FeedItem>>(emptyList())
+        private set
+    var error by mutableStateOf<String?>(null)
+        private set
+    var loading by mutableStateOf(false)
+        private set
+    var loadingMore by mutableStateOf(false)
+        private set
+    var refreshing by mutableStateOf(false)
+        private set
+    var hasMore by mutableStateOf(false)
+        private set
+    var mode by mutableStateOf(FeedMode.HOME)
+        private set
+    var searchTerm by mutableStateOf("")
+        private set
 
     /** 最近一次失败的真实原因（HTTP 码 / 业务 code），用于界面展示。 */
     val lastError: String get() = api.lastError
 
+    private var cursor = ""
+    /** 上次是按哪组条件加载的，用来跳过「返回详情页」这种无意义重取。 */
+    private var loadedKey: String? = null
+
+    fun submitSearch(term: String) {
+        searchTerm = term
+        mode = FeedMode.SEARCH
+    }
+
+    fun clearSearch() {
+        searchTerm = ""
+        mode = FeedMode.HOME
+    }
+
     /**
-     * 读取当前登录用户，供首页右上角展示头像。
-     *
-     * 不再先用 hasLoginSession() 短路：那个判断依赖 Cookie 是否能读到，
-     * 一旦读不到就会静默退出（日志里连一条记录都没有）。这里直接尝试读页面状态，
-     * 拿到就用，拿不到再清理。
+     * 首次进入或条件变化时加载；key 相同时直接复用已有数据。
+     * key 里带 retryKey 与登录态，所以点「重试」或重新登录仍会真的重取。
      */
+    suspend fun loadIfNeeded(key: String) {
+        if (key == loadedKey && (items.isNotEmpty() || error != null)) return
+        loadedKey = key
+        loading = true
+        error = null
+        cursor = ""
+        val result = fetch("")
+        if (result == null) {
+            error = lastError.ifBlank { "未知错误" }
+            hasMore = false
+        } else {
+            items = result.first
+            cursor = result.second
+            hasMore = cursor.isNotEmpty()
+        }
+        loading = false
+    }
+
+    /** 下拉刷新：始终重取第一页。 */
+    suspend fun refresh() {
+        if (refreshing) return
+        refreshing = true
+        cursor = ""
+        val result = fetch("")
+        if (result == null) {
+            error = lastError.ifBlank { "未知错误" }
+        } else {
+            items = result.first
+            cursor = result.second
+            hasMore = cursor.isNotEmpty()
+            error = null
+        }
+        refreshing = false
+    }
+
+    /** 触底加载下一页。 */
+    suspend fun loadMore() {
+        if (loadingMore || loading || refreshing || !hasMore) return
+        loadingMore = true
+        val result = fetch(cursor)
+        if (result != null) {
+            items = items + result.first
+            cursor = result.second
+            hasMore = cursor.isNotEmpty()
+        } else {
+            AppLog.w("MainViewModel", "loadMore failed: $lastError")
+        }
+        loadingMore = false
+    }
+
+    /** 读取当前登录用户，供首页右上角展示头像。 */
     suspend fun refreshProfile() {
         val app = RedNoteApp.instance
         val hasCookie = app.signEngine.hasLoginSession()
@@ -36,16 +124,14 @@ class MainViewModel {
         }
     }
 
-    suspend fun homeFeed(cursor: String): Pair<List<FeedItem>, String>? {
-        val data = api.homeFeed(cursor) ?: return null
-        return data.items to (data.cursor ?: "")
-    }
-
-    suspend fun search(keyword: String, cursor: String): Pair<List<FeedItem>, String>? {
-        // search 接口用 page 分页；cursor 里存的是页码
-        val page = cursor.toIntOrNull() ?: 1
-        val data = api.searchNotes(keyword, page) ?: return null
-        val next = if (data.hasMore) (page + 1).toString() else ""
-        return data.items to next
+    private suspend fun fetch(after: String): Pair<List<FeedItem>, String>? = when (mode) {
+        FeedMode.HOME -> api.homeFeed(after)?.let { it.items to (it.cursor ?: "") }
+        FeedMode.SEARCH -> {
+            // search 接口用页码分页，cursor 里存的其实是页码
+            val page = if (after.isEmpty()) 1 else (after.toIntOrNull() ?: 1)
+            api.searchNotes(searchTerm, page)?.let {
+                it.items to if (it.hasMore) (page + 1).toString() else ""
+            }
+        }
     }
 }
