@@ -26,6 +26,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -57,6 +60,7 @@ fun MainScreen(
     onOpenNote: (String, String) -> Unit,
     onLogin: () -> Unit,
     onOpenLogs: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     var query by remember { mutableStateOf("") }        // 输入框内容，每敲一个字都会变
     var searchTerm by remember { mutableStateOf("") }   // 真正提交给接口的词
@@ -73,6 +77,12 @@ fun MainScreen(
     val authVersion = RedNoteApp.instance.authVersion
     // 读一下头像状态，登录/刷新后这里会重组
     val avatarUrl = RedNoteApp.instance.avatarUrl
+    val nickname = RedNoteApp.instance.nickname
+    // Cookie 不在快照系统里，用 authVersion 当 key 让它跟着登录态一起刷新；
+    // 头像已经拿到也算已登录（避免 Cookie 读不到时按钮又变回「登录」）
+    val loggedIn = remember(authVersion, avatarUrl) {
+        RedNoteApp.instance.signEngine.hasLoginSession() || avatarUrl.isNotBlank()
+    }
 
     suspend fun load(reset: Boolean) {
         if (reset) {
@@ -137,6 +147,8 @@ fun MainScreen(
             onQueryChange = { query = it },
             active = mode == FeedMode.SEARCH,
             avatarUrl = avatarUrl,
+            nickname = nickname,
+            loggedIn = loggedIn,
             onSubmit = {
                 if (query.isNotBlank()) {
                     searchTerm = query
@@ -151,6 +163,8 @@ fun MainScreen(
                 retryKey++
             },
             onLogin = onLogin,
+            onOpenLogs = onOpenLogs,
+            onOpenSettings = onOpenSettings,
         )
 
         when (val s = state) {
@@ -227,10 +241,16 @@ private fun SearchBar(
     onQueryChange: (String) -> Unit,
     active: Boolean,
     avatarUrl: String,
+    nickname: String,
+    loggedIn: Boolean,
     onSubmit: () -> Unit,
     onClear: () -> Unit,
     onLogin: () -> Unit,
+    onOpenLogs: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
+    var menuOpen by remember { mutableStateOf(false) }
+
     OutlinedTextField(
         value = query,
         onValueChange = onQueryChange,
@@ -241,17 +261,62 @@ private fun SearchBar(
         trailingIcon = {
             when {
                 active -> TextButton(onClick = onClear) { Text("取消") }
-                // 登录后把「登录」按钮换成账号头像
-                avatarUrl.isNotBlank() -> AsyncImage(
-                    model = avatarUrl,
-                    contentDescription = "我的账号",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .padding(end = 8.dp)
-                        .size(32.dp)
-                        .clip(CircleShape)
-                        .clickable { onLogin() },
-                )
+                // 已登录：头像按钮，点开是账号菜单
+                loggedIn -> Box {
+                    Surface(
+                        onClick = { menuOpen = true },
+                        shape = CircleShape,
+                        tonalElevation = 2.dp,
+                        modifier = Modifier.padding(end = 8.dp).size(32.dp),
+                    ) {
+                        if (avatarUrl.isNotBlank()) {
+                            AsyncImage(
+                                model = avatarUrl,
+                                contentDescription = "我的账号",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        } else {
+                            // 头像还没取到时先占位，避免按钮突然消失
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Text("我", style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = menuOpen,
+                        onDismissRequest = { menuOpen = false },
+                    ) {
+                        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                            Text(
+                                nickname.ifBlank { "已登录" },
+                                style = MaterialTheme.typography.titleSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                "登录状态：正常",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("设置") },
+                            onClick = {
+                                menuOpen = false
+                                onOpenSettings()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("日志记录") },
+                            onClick = {
+                                menuOpen = false
+                                onOpenLogs()
+                            },
+                        )
+                    }
+                }
                 else -> TextButton(onClick = onLogin) { Text("登录") }
             }
         },
