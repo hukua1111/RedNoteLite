@@ -2,6 +2,7 @@ package com.rednote.lite
 
 import android.app.Application
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import com.rednote.lite.data.remote.XhsApi
 import com.rednote.lite.data.sign.SignEngine
 
@@ -29,6 +30,23 @@ class RedNoteApp : Application() {
 
     fun notifyAuthChanged() {
         authVersionState.intValue++
+    }
+
+    private val avatarState = mutableStateOf("")
+    private val nicknameState = mutableStateOf("")
+
+    /** 当前登录用户的头像 / 昵称；未登录时为空串。 */
+    val avatarUrl: String get() = avatarState.value
+    val nickname: String get() = nicknameState.value
+
+    fun updateProfile(nickname: String, avatar: String) {
+        nicknameState.value = nickname
+        avatarState.value = avatar
+    }
+
+    fun clearProfile() {
+        nicknameState.value = ""
+        avatarState.value = ""
     }
 
     override fun onCreate() {

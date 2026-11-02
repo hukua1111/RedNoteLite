@@ -45,6 +45,8 @@ data class NoteCard(
     @SerialName("interact_info") val interactInfo: InteractInfo? = null,
     val cover: Cover? = null,
     @SerialName("video") val video: VideoInfo? = null,
+    // 有些列表接口把 xsec_token 放在 note_card 里而不是外层，取不到时用它兜底
+    @SerialName("xsec_token") val xsecToken: String? = null,
 )
 
 @Serializable
@@ -54,7 +56,11 @@ data class Cover(
     val url: String? = null,
     val width: Int = 0,
     val height: Int = 0,
-)
+) {
+    /** 取第一个非空链接：接口有时会返回空字符串，`?:` 是兜不住的。 */
+    val bestUrl: String?
+        get() = listOfNotNull(urlDefault, urlPre, url).firstOrNull { it.isNotBlank() }
+}
 
 @Serializable
 data class VideoInfo(
@@ -154,7 +160,19 @@ data class NoteImage(
     val height: Int = 0,
     @SerialName("trace_id") val traceId: String? = null,
     @SerialName("info_list") val infoList: List<ImageInfo> = emptyList(),
-)
+) {
+    /**
+     * 详情图的可用链接。
+     *
+     * 接口不一定给 `url_default`，有时只把地址塞在 `info_list` 里（`WB_DFT` 是默认图），
+     * 也可能返回空字符串——所以这里按「非空」逐个筛，而不是用 `?:`。
+     */
+    val bestUrl: String?
+        get() = listOfNotNull(urlDefault, urlPre, url)
+            .firstOrNull { it.isNotBlank() }
+            ?: infoList.firstOrNull { it.imageScene == "WB_DFT" }?.url?.takeIf { it.isNotBlank() }
+            ?: infoList.firstOrNull { !it.url.isNullOrBlank() }?.url
+}
 
 @Serializable
 data class ImageInfo(
@@ -166,7 +184,9 @@ data class ImageInfo(
 
 @Serializable
 data class CommentsPage(
-    val list: List<Comment> = emptyList(),
+    // 评论接口（GET /api/sns/web/v2/comment/page）返回的是 data.comments，
+    // 不是 data.list —— 之前按 list 解析，所以永远是 0 条
+    @SerialName("comments") val list: List<Comment> = emptyList(),
     val cursor: String? = null,
     @SerialName("has_more") val hasMore: Boolean = false,
 )

@@ -16,7 +16,8 @@ class NoteDetailViewModel {
         val resp = api.noteDetail(noteId, xsecToken) ?: return null
         val item = resp.items.firstOrNull() ?: return null
         val card = item.noteCard ?: return null
-        val comments = item.comments?.list ?: emptyList()
+        // 评论单独走 GET 接口；feed 响应里带的那份经常是空的
+        val comments = api.comments(noteId, "", xsecToken)?.list ?: emptyList()
         return card to comments
     }
 }

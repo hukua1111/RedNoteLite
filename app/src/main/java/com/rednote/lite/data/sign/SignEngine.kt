@@ -301,13 +301,19 @@ class SignEngine(private val context: Context) {
     }
 
     /**
-     * 在页面内直接 POST。
+     * 在页面内直接发起请求。
      *
      * 这是最可靠的一条路：请求由站点自己的 JS 发起，X-s 由站点的拦截器补，
      * Cookie / UA / Referer / a1 全部天然一致。返回 null 表示页面侧失败，
      * 调用方应退回 [sign] + OkHttp。
+     *
+     * [path] 可以带 query（评论接口是 GET + query 参数）。
      */
-    suspend fun fetchInPage(path: String, bodyJson: String): PageFetch? = withContext(Dispatchers.Main) {
+    suspend fun fetchInPage(
+        path: String,
+        method: String = "POST",
+        bodyJson: String? = null,
+    ): PageFetch? = withContext(Dispatchers.Main) {
         if (!pageReady && !warmUp()) return@withContext null
         val wv = ensureWebView()
         val id = UUID.randomUUID().toString()
@@ -317,12 +323,14 @@ class SignEngine(private val context: Context) {
             append("(function(){")
             append("var id=").append(JSONObject.quote(id)).append(";")
             append("var url=").append(JSONObject.quote(API_ORIGIN + path)).append(";")
-            append("var body=").append(JSONObject.quote(bodyJson)).append(";")
             append("try{")
-            append("fetch(url,{method:'POST',credentials:'include',")
-            append("headers:{'Content-Type':'application/json;charset=UTF-8',")
-            append("'Accept':'application/json, text/plain, */*'},")
-            append("body:body})")
+            append("var opt={method:").append(JSONObject.quote(method)).append(",credentials:'include',")
+            append("headers:{'Accept':'application/json, text/plain, */*'}};")
+            if (bodyJson != null) {
+                append("opt.headers['Content-Type']='application/json;charset=UTF-8';")
+                append("opt.body=").append(JSONObject.quote(bodyJson)).append(";")
+            }
+            append("fetch(url,opt)")
             append(".then(function(r){return r.text().then(function(t){return {s:r.status,t:t};});})")
             append(".then(function(o){Native.onFetchDone(id,String(o.s),o.t,'');})")
             append(".catch(function(e){Native.onFetchDone(id,'','',''+e);});")
@@ -334,6 +342,45 @@ class SignEngine(private val context: Context) {
         pendingFetches.remove(id)
         if (result == null) Log.w(TAG, "page fetch timeout: $path")
         result
+    }
+
+    /**
+     * 从页面内嵌状态里读当前登录用户，用于首页右上角显示头像。
+     *
+     * 站点自己把用户信息放在 `window.__INITIAL_STATE__.user.userInfo`，
+     * 直接读它比再猜一个"取用户信息"的接口稳。
+     */
+    suspend fun readUserInfo(): UserProfile? = withContext(Dispatchers.Main) {
+        // 即使 mnsv2 没就绪也试一下：读 __INITIAL_STATE__ 并不依赖签名 SDK
+        if (!pageReady) warmUp()
+        val wv = ensureWebView()
+        val script = """
+            (function(){
+                try {
+                    var s = window.__INITIAL_STATE__;
+                    if (!s || !s.user) return JSON.stringify({error:'no-state'});
+                    var u = s.user.userInfo || {};
+                    if (!u.userId && !u.nickname) return JSON.stringify({error:'anonymous'});
+                    return JSON.stringify({
+                        nickname: u.nickname || '',
+                        avatar: u.image || u.avatar || u.avatarUrl || '',
+                        userId: u.userId || ''
+                    });
+                } catch(e) { return JSON.stringify({error: '' + e}); }
+            })()
+        """.trimIndent()
+        val raw = evalAsync(wv, script) ?: return@withContext null
+        val outer = runCatching { org.json.JSONTokener(raw).nextValue() as? String }.getOrNull()
+            ?: return@withContext null
+        val obj = runCatching { JSONObject(outer) }.getOrNull() ?: return@withContext null
+        if (obj.optString("error").isNotEmpty()) {
+            Log.d(TAG, "readUserInfo: ${obj.optString("error")}")
+            return@withContext null
+        }
+        val nickname = obj.optString("nickname")
+        val avatar = obj.optString("avatar")
+        if (nickname.isEmpty() && avatar.isEmpty()) return@withContext null
+        UserProfile(nickname = nickname, avatar = avatar)
     }
 
     /** 生成签名头；失败返回 null。 */
@@ -427,3 +474,6 @@ data class SignHeaders(val xs: String, val xt: String, val xSCommon: String, val
 
 /** 页面内 fetch 的原始结果。 */
 data class PageFetch(val status: Int, val body: String)
+
+/** 从页面内嵌状态读到的登录用户信息。 */
+data class UserProfile(val nickname: String, val avatar: String)

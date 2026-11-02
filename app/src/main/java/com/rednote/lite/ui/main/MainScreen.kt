@@ -1,5 +1,6 @@
 package com.rednote.lite.ui.main
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,12 +12,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -67,6 +70,8 @@ fun MainScreen(
     val gridState = rememberLazyGridState()
     // 登录成功后由 LoginScreen 自增，这里作为 LaunchedEffect 的 key，触发一次重新拉流
     val authVersion = RedNoteApp.instance.authVersion
+    // 读一下头像状态，登录/刷新后这里会重组
+    val avatarUrl = RedNoteApp.instance.avatarUrl
 
     suspend fun load(reset: Boolean) {
         if (reset) {
@@ -100,6 +105,9 @@ fun MainScreen(
     // 老实现 key 里带 query，输入框每敲一个字就打一次接口
     LaunchedEffect(mode, searchTerm, retryKey, authVersion) { load(reset = true) }
 
+    // 登录态变化后同步一次用户信息（头像/昵称）
+    LaunchedEffect(authVersion) { vm.refreshProfile() }
+
     LaunchedEffect(gridState) {
         snapshotFlow {
             // hasMore / loadingMore 必须在 snapshotFlow 内部读，否则取到的是首次组合时的旧值，
@@ -127,6 +135,7 @@ fun MainScreen(
             query = query,
             onQueryChange = { query = it },
             active = mode == FeedMode.SEARCH,
+            avatarUrl = avatarUrl,
             onSubmit = {
                 if (query.isNotBlank()) {
                     searchTerm = query
@@ -189,7 +198,9 @@ fun MainScreen(
                     ) {
                         items(items.size) { index ->
                             val item = items[index]
-                            NoteCardView(item = item, onClick = { onOpenNote(item.id, item.xsecToken ?: "") })
+                            // xsec_token 有的接口放在外层、有的塞在 note_card 里，两处都兜一下
+                            val token = item.xsecToken ?: item.noteCard?.xsecToken ?: ""
+                            NoteCardView(item = item, onClick = { onOpenNote(item.id, token) })
                         }
                         if (loadingMore) {
                             item(span = { GridItemSpan(maxLineSpan) }) {
@@ -213,6 +224,7 @@ private fun SearchBar(
     query: String,
     onQueryChange: (String) -> Unit,
     active: Boolean,
+    avatarUrl: String,
     onSubmit: () -> Unit,
     onClear: () -> Unit,
     onLogin: () -> Unit,
@@ -225,10 +237,20 @@ private fun SearchBar(
         singleLine = true,
         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
         trailingIcon = {
-            if (active) {
-                TextButton(onClick = onClear) { Text("取消") }
-            } else {
-                TextButton(onClick = onLogin) { Text("登录") }
+            when {
+                active -> TextButton(onClick = onClear) { Text("取消") }
+                // 登录后把「登录」按钮换成账号头像
+                avatarUrl.isNotBlank() -> AsyncImage(
+                    model = avatarUrl,
+                    contentDescription = "我的账号",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .padding(end = 8.dp)
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .clickable { onLogin() },
+                )
+                else -> TextButton(onClick = onLogin) { Text("登录") }
             }
         },
         shape = RoundedCornerShape(24.dp),
@@ -241,8 +263,7 @@ private fun SearchBar(
 private fun NoteCardView(item: FeedItem, onClick: () -> Unit) {
     val card = item.noteCard
     val title = card?.displayTitle ?: card?.title ?: ""
-    val cover = card?.cover?.urlDefault ?: card?.cover?.urlPre ?: card?.cover?.url
-        ?: card?.video?.image?.urlDefault
+    val cover = card?.cover?.bestUrl ?: card?.video?.image?.bestUrl
 
     Surface(onClick = onClick, shape = RoundedCornerShape(12.dp), tonalElevation = 1.dp) {
         Column {

@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.rednote.lite.data.model.Comment
@@ -113,6 +114,22 @@ fun NoteDetailScreen(
 @Composable
 private fun NoteContent(note: NoteDetailCard, comments: List<Comment>) {
     LazyColumn(modifier = Modifier.fillMaxSize()) {
+        // 卡片拿回来是空的：给一句明确提示，而不是留一整屏白
+        if (note.imageList.isEmpty() && note.title.isNullOrBlank() && note.desc.isNullOrBlank()) {
+            item {
+                Box(
+                    Modifier.fillMaxWidth().padding(24.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "这条笔记没有返回内容\nxsec_token 可能已失效，请返回首页重新打开",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
         // 图片轮播
         if (note.imageList.isNotEmpty()) {
             item {
@@ -121,7 +138,7 @@ private fun NoteContent(note: NoteDetailCard, comments: List<Comment>) {
                     HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
                         val img = note.imageList[page]
                         AsyncImage(
-                            model = img.urlDefault ?: img.urlPre ?: img.url,
+                            model = img.bestUrl,
                             contentDescription = null,
                             contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxSize(),
@@ -207,8 +224,10 @@ private fun NoteContent(note: NoteDetailCard, comments: List<Comment>) {
 
         item { HorizontalDivider(Modifier.padding(horizontal = 16.dp)) }
         item {
+            val count = if (comments.isNotEmpty()) comments.size.toString()
+            else note.interactInfo?.commentCount ?: "0"
             Text(
-                "评论 ${comments.size}",
+                "评论 $count",
                 style = MaterialTheme.typography.titleSmall,
                 modifier = Modifier.padding(16.dp),
             )

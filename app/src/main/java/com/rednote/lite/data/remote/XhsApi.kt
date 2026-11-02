@@ -12,10 +12,12 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 /**
@@ -23,7 +25,7 @@ import java.util.concurrent.TimeUnit
  *
  * 实测结论（详见 ref/xhs/FINDINGS.md）：
  *  - `/api/sns/web/v1/search/notes` 只校验登录态，不校验签名；
- *  - feed / homefeed / comment / user 等接口在网关层（406）要求真实 mnsv2 签名，
+ *  - feed / homefeed / comment 等接口在网关层（406）要求真实 mnsv2 签名，
  *    签名由隐藏 WebView 内的官方 JS 生成。
  */
 class XhsApi(private val signEngine: SignEngine) {
@@ -70,60 +72,77 @@ class XhsApi(private val signEngine: SignEngine) {
         return null
     }
 
-    private suspend fun postRaw(path: String, body: String, signed: Boolean): String? =
-        withContext(Dispatchers.IO) {
-            lastError = ""
+    /**
+     * 统一的请求入口。
+     *
+     * @param pathWithQuery 带 query 的路径（评论接口是 GET + query）
+     * @param body JSON 请求体；GET 传 null
+     */
+    private suspend fun requestRaw(
+        pathWithQuery: String,
+        method: String,
+        body: String?,
+        signed: Boolean,
+    ): String? = withContext(Dispatchers.IO) {
+        lastError = ""
 
-            // ---- 路线 1：整段请求交给页面内的真实 JS 发起 ----
-            // 这样 X-s 由站点自己的拦截器补，Cookie/UA/Referer/a1 完全一致。
-            if (signed) {
-                val page = runCatching { signEngine.fetchInPage(path, body) }.getOrNull()
-                if (page != null && page.status == 200 && page.body.trimStart().startsWith("{")) {
-                    Log.d(TAG, "PAGE $path -> ${page.status} ${page.body.take(160)}")
-                    return@withContext page.body
-                }
-                if (page != null) {
-                    Log.w(TAG, "page fetch unusable: status=${page.status} body=${page.body.take(120)}")
-                }
+        // ---- 路线 1：整段请求交给页面内的真实 JS 发起 ----
+        // 这样 X-s 由站点自己的拦截器补，Cookie/UA/Referer/a1 完全一致。
+        if (signed) {
+            val page = runCatching { signEngine.fetchInPage(pathWithQuery, method, body) }.getOrNull()
+            if (page != null && page.status == 200 && page.body.trimStart().startsWith("{")) {
+                Log.d(TAG, "PAGE $method $pathWithQuery -> ${page.status} ${page.body.take(160)}")
+                return@withContext page.body
             }
-
-            // ---- 路线 2：原生签名 + OkHttp ----
-            val builder = Request.Builder()
-                .url(BASE + path)
-                .header("User-Agent", SignEngine.USER_AGENT)
-                .header("Content-Type", CONTENT_TYPE)
-                .header("Origin", WEB_ORIGIN)
-                .header("Referer", REFERER)
-                .header("Accept", "application/json, text/plain, */*")
-                .header("Cookie", cookieHeader())
-
-            if (signed) {
-                val headers = signEngine.sign(path, body)
-                if (headers == null) {
-                    Log.w(TAG, "sign unavailable for $path; sending unsigned")
-                } else {
-                    builder.header("X-s", headers.xs)
-                    builder.header("X-t", headers.xt)
-                    builder.header("X-S-Common", headers.xSCommon)
-                }
-            }
-
-            val request = builder.post(body.toRequestBody(mediaType)).build()
-            runCatching {
-                client.newCall(request).execute().use { resp ->
-                    val text = resp.body?.string()
-                    Log.d(TAG, "POST $path -> ${resp.code} ${text?.take(160)}")
-                    if (resp.isSuccessful) {
-                        text
-                    } else {
-                        fail("请求被拒绝：HTTP ${resp.code}${text?.take(80)?.let { " · $it" } ?: ""}（$path）")
-                    }
-                }
-            }.getOrElse {
-                fail("网络错误：${it.message}（$path）")
-                null
+            if (page != null) {
+                Log.w(TAG, "page fetch unusable: status=${page.status} body=${page.body.take(120)}")
             }
         }
+
+        // ---- 路线 2：原生签名 + OkHttp ----
+        val builder = Request.Builder()
+            .url(BASE + pathWithQuery)
+            .header("User-Agent", SignEngine.USER_AGENT)
+            .header("Origin", WEB_ORIGIN)
+            .header("Referer", REFERER)
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Cookie", cookieHeader())
+
+        if (signed) {
+            // GET 的签名串是「路径 + query」，没有请求体
+            val headers = signEngine.sign(pathWithQuery, body ?: "")
+            if (headers == null) {
+                Log.w(TAG, "sign unavailable for $pathWithQuery; sending unsigned")
+            } else {
+                builder.header("X-s", headers.xs)
+                builder.header("X-t", headers.xt)
+                builder.header("X-S-Common", headers.xSCommon)
+            }
+        }
+
+        val request = if (method == "GET") {
+            builder.get().build()
+        } else {
+            builder.header("Content-Type", CONTENT_TYPE)
+                .post((body ?: "").toRequestBody(mediaType))
+                .build()
+        }
+
+        runCatching {
+            client.newCall(request).execute().use { resp ->
+                val text = resp.body?.string()
+                Log.d(TAG, "$method $pathWithQuery -> ${resp.code} ${text?.take(160)}")
+                if (resp.isSuccessful) {
+                    text
+                } else {
+                    fail("请求被拒绝：HTTP ${resp.code}")
+                }
+            }
+        }.getOrElse {
+            fail("网络错误：${it.message}")
+            null
+        }
+    }
 
     private inline fun <reified T> decodeData(raw: String?): T? {
         if (raw.isNullOrBlank()) return null
@@ -163,7 +182,7 @@ class XhsApi(private val signEngine: SignEngine) {
             put("search_id", "")
             put("image_scene", "SR_1_1")
         }.toString()
-        return decodeData(postRaw("/api/sns/web/v1/search/notes", body, signed = false))
+        return decodeData(requestRaw("/api/sns/web/v1/search/notes", "POST", body, signed = false))
     }
 
     /** 首页推荐信息流。 */
@@ -175,29 +194,59 @@ class XhsApi(private val signEngine: SignEngine) {
             put("category", "homefeed_recommend")
             put("search_id", "")
         }.toString()
-        return decodeData(postRaw("/api/sns/web/v1/homefeed", body, signed = true))
+        return decodeData(requestRaw("/api/sns/web/v1/homefeed", "POST", body, signed = true))
     }
 
-    /** 笔记详情（含首批评论）。 */
+    /**
+     * 笔记详情（含正文与图片）。
+     *
+     * 请求体里 `extra` 和 `xsec_source` 不能省：少了它们服务端可能返回一个
+     * 内容被剥空的 `note_card`（表现就是详情页全白、评论 0）。
+     * token 可能来自首页信息流（pc_feed）或搜索（pc_search），
+     * 所以拿到空卡片时换一个来源重试一次。
+     */
     suspend fun noteDetail(noteId: String, xsecToken: String): NoteDetailResponse? {
-        val body = buildJsonObject {
-            put("source_note_id", noteId)
-            putJsonArray("image_formats") {
-                add(kotlinx.serialization.json.JsonPrimitive("jpg"))
-                add(kotlinx.serialization.json.JsonPrimitive("webp"))
-                add(kotlinx.serialization.json.JsonPrimitive("avif"))
-            }
-            put("xsec_token", xsecToken)
-        }.toString()
-        return decodeData(postRaw("/api/sns/web/v1/feed", body, signed = true))
+        for (source in listOf("pc_feed", "pc_search")) {
+            val body = buildJsonObject {
+                put("source_note_id", noteId)
+                putJsonArray("image_formats") {
+                    add(kotlinx.serialization.json.JsonPrimitive("jpg"))
+                    add(kotlinx.serialization.json.JsonPrimitive("webp"))
+                    add(kotlinx.serialization.json.JsonPrimitive("avif"))
+                }
+                putJsonObject("extra") { put("need_body_topic", 1) }
+                put("xsec_source", source)
+                put("xsec_token", xsecToken)
+            }.toString()
+            val resp = decodeData<NoteDetailResponse>(
+                requestRaw("/api/sns/web/v1/feed", "POST", body, signed = true)
+            )
+            val card = resp?.items?.firstOrNull()?.noteCard
+            val usable = card != null &&
+                (card.imageList.isNotEmpty() || !card.title.isNullOrBlank() || !card.desc.isNullOrBlank())
+            if (usable) return resp
+            Log.w(TAG, "detail empty for source=$source, note=$noteId")
+        }
+        lastError = "笔记内容为空（xsec_token 可能已失效，请返回首页重新打开）"
+        return null
     }
 
-    /** 评论分页。 */
-    suspend fun comments(noteId: String, cursor: String): CommentsPage? {
-        val body = buildJsonObject {
-            put("note_id", noteId)
-            put("cursor", cursor)
-        }.toString()
-        return decodeData(postRaw("/api/sns/web/v2/comment/page", body, signed = true))
+    /**
+     * 评论分页。
+     *
+     * 真实接口是 **GET** `/api/sns/web/v2/comment/page`，参数走 query，
+     * 返回 `data.comments`。老实现按 POST + `data.list` 处理，所以永远拿到 0 条。
+     */
+    suspend fun comments(noteId: String, cursor: String, xsecToken: String): CommentsPage? {
+        fun enc(v: String): String = URLEncoder.encode(v, "UTF-8")
+        val query = buildString {
+            append("/api/sns/web/v2/comment/page")
+            append("?note_id=").append(enc(noteId))
+            append("&cursor=").append(enc(cursor))
+            append("&top_comment_id=")
+            append("&image_formats=").append(enc("jpg,webp,avif"))
+            append("&xsec_token=").append(enc(xsecToken))
+        }
+        return decodeData(requestRaw(query, "GET", null, signed = true))
     }
 }
