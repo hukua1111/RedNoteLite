@@ -10,6 +10,9 @@ class MainViewModel {
 
     private val api = RedNoteApp.instance.api
 
+    /** 最近一次失败的真实原因（HTTP 码 / 业务 code），用于界面展示。 */
+    val lastError: String get() = api.lastError
+
     suspend fun homeFeed(cursor: String): Pair<List<FeedItem>, String>? {
         val data = api.homeFeed(cursor) ?: return null
         return data.items to (data.cursor ?: "")

@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -53,12 +54,15 @@ fun NoteDetailScreen(
 ) {
     var state by remember { mutableStateOf<LoadState<NoteDetailCard>>(LoadState.Loading) }
     var comments by remember { mutableStateOf<List<Comment>>(emptyList()) }
+    var retryKey by remember { mutableStateOf(0) }
     val vm = remember { NoteDetailViewModel() }
 
-    LaunchedEffect(noteId) {
+    LaunchedEffect(noteId, xsecToken, retryKey) {
+        state = LoadState.Loading
         val detail = vm.load(noteId, xsecToken)
         if (detail == null) {
-            state = LoadState.Error("笔记加载失败（可能需要登录）")
+            // 展示真实原因，不再一律甩给用户一句「可能需要登录」
+            state = LoadState.Error(vm.lastError.ifBlank { "笔记加载失败" })
         } else {
             state = LoadState.Success(detail.first)
             comments = detail.second
@@ -83,7 +87,21 @@ fun NoteDetailScreen(
                     CircularProgressIndicator()
                 }
                 is LoadState.Error -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(s.message)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(horizontal = 24.dp),
+                    ) {
+                        Text("笔记加载失败", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            s.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                        TextButton(onClick = { retryKey++ }, modifier = Modifier.padding(top = 8.dp)) {
+                            Text("重试")
+                        }
+                    }
                 }
                 is LoadState.Success -> NoteContent(s.data, comments)
                 else -> Unit

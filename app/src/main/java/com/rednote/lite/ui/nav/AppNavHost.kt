@@ -9,6 +9,7 @@ import androidx.navigation.navArgument
 import com.rednote.lite.ui.detail.NoteDetailScreen
 import com.rednote.lite.ui.login.LoginScreen
 import com.rednote.lite.ui.main.MainScreen
+import android.net.Uri
 
 object Routes {
     const val MAIN = "main"
@@ -22,7 +23,9 @@ fun AppNavHost(navController: NavHostController) {
         composable(Routes.MAIN) {
             MainScreen(
                 onOpenNote = { noteId, xsecToken ->
-                    navController.navigate("${Routes.DETAIL}/$noteId?token=$xsecToken")
+                    // xsec_token 是 base64，可能含 + / = 甚至 & ，不编码会把路由参数撑坏
+                    val token = Uri.encode(xsecToken)
+                    navController.navigate("${Routes.DETAIL}/${Uri.encode(noteId)}?token=$token")
                 },
                 onLogin = { navController.navigate(Routes.LOGIN) },
             )

@@ -11,6 +11,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.content.Context
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -18,6 +19,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 
 /**
@@ -37,11 +40,11 @@ class SignEngine(private val context: Context) {
     companion object {
         private const val TAG = "SignEngine"
         private const val HOME_URL = "https://www.xiaohongshu.com/explore"
+        private const val ORIGIN = "https://www.xiaohongshu.com"
+        private const val API_ORIGIN = "https://edith.xiaohongshu.com"
         private const val SIGN_TIMEOUT_MS = 15_000L
         private const val READY_TIMEOUT_MS = 25_000L
-        const val USER_AGENT =
-            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        private const val FETCH_TIMEOUT_MS = 25_000L
 
         /**
          * 桌面版 UA：登录页用它加载 PC 版网页，避免被引导去下载 App，
@@ -50,6 +53,15 @@ class SignEngine(private val context: Context) {
         const val DESKTOP_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+        /**
+         * 登录页 / 签名页 / API 请求统一使用桌面版 UA。
+         *
+         * `a1` 这类风控 cookie 是跟 UA 指纹绑定的：登录时用桌面 UA、请求时却用手机 UA
+         * （老实现就是这样），网关会直接判为异常。签名体里声明的 x1=xhs-pc-web / x2=PC
+         * 也是桌面语义，三者必须一致。
+         */
+        const val USER_AGENT = DESKTOP_USER_AGENT
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -61,6 +73,24 @@ class SignEngine(private val context: Context) {
     private var pageReady = false
 
     private var readyDeferred = CompletableDeferred<Boolean>()
+
+    /** 页面内 fetch 的等待队列：key 是一次请求的 id。 */
+    private val pendingFetches = ConcurrentHashMap<String, CompletableDeferred<PageFetch?>>()
+
+    /** 暴露给页面 JS 的桥，只用来把 fetch 结果回传，不做任何其它事。 */
+    inner class PageBridge {
+        @JavascriptInterface
+        fun onFetchDone(id: String?, status: String?, body: String?, error: String?) {
+            val deferred = pendingFetches.remove(id) ?: return
+            if (deferred.isCompleted) return
+            if (!error.isNullOrEmpty()) {
+                Log.w(TAG, "page fetch error: $error")
+                deferred.complete(null)
+            } else {
+                deferred.complete(PageFetch(status?.toIntOrNull() ?: 0, body.orEmpty()))
+            }
+        }
+    }
 
     /** 页面里的签名实现，直接复用站点自己的 seccore_signv2 逻辑。 */
     private val signScript = """
@@ -191,6 +221,8 @@ class SignEngine(private val context: Context) {
         }
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
+        // 页面内 fetch 的结果靠这个桥回传
+        wv.addJavascriptInterface(PageBridge(), "Native")
         wv.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
@@ -226,12 +258,13 @@ class SignEngine(private val context: Context) {
 
     /** 轮询等待页面注入 window.mnsv2。 */
     private fun waitForMnsv2(view: WebView) {
+        val deferred = readyDeferred
         var attempts = 0
         fun check() {
             if (pageReady) return
-            if (attempts > 20) {
+            if (attempts > 40) {
                 Log.w(TAG, "mnsv2 not found after retries")
-                readyDeferred.complete(false)
+                if (!deferred.isCompleted) deferred.complete(false)
                 return
             }
             attempts++
@@ -239,7 +272,7 @@ class SignEngine(private val context: Context) {
                 if (value != null && value.contains("function")) {
                     pageReady = true
                     Log.d(TAG, "window.mnsv2 ready")
-                    readyDeferred.complete(true)
+                    if (!deferred.isCompleted) deferred.complete(true)
                 } else {
                     main.postDelayed({ check() }, 500)
                 }
@@ -248,19 +281,67 @@ class SignEngine(private val context: Context) {
         main.postDelayed({ check() }, 300)
     }
 
-    suspend fun warmUp(): Boolean = withContext(Dispatchers.Main) {
+    /**
+     * 预热签名页。
+     *
+     * 老实现有个坑：`readyDeferred` 一旦被 complete(false) 就永久失效，
+     * 之后 warmUp 不会再 loadUrl，等于**一次网络抖动就得重启 App**。
+     * 这里失败后允许重建，[force] 为 true 时强制重新加载。
+     */
+    suspend fun warmUp(force: Boolean = false): Boolean = withContext(Dispatchers.Main) {
         val wv = ensureWebView()
-        if (pageReady) return@withContext true
+        if (pageReady && !force) return@withContext true
+        if (force || (readyDeferred.isCompleted && !pageReady)) {
+            pageReady = false
+            readyDeferred = CompletableDeferred()
+        }
         if (!readyDeferred.isCompleted) {
             wv.loadUrl(HOME_URL)
         }
         withTimeoutOrNull(READY_TIMEOUT_MS) { readyDeferred.await() } ?: pageReady
     }
 
+    /**
+     * 在页面内直接 POST。
+     *
+     * 这是最可靠的一条路：请求由站点自己的 JS 发起，X-s 由站点的拦截器补，
+     * Cookie / UA / Referer / a1 全部天然一致。返回 null 表示页面侧失败，
+     * 调用方应退回 [sign] + OkHttp。
+     */
+    suspend fun fetchInPage(path: String, bodyJson: String): PageFetch? = withContext(Dispatchers.Main) {
+        if (!pageReady && !warmUp()) return@withContext null
+        val wv = ensureWebView()
+        val id = UUID.randomUUID().toString()
+        val deferred = CompletableDeferred<PageFetch?>()
+        pendingFetches[id] = deferred
+        val script = buildString {
+            append("(function(){")
+            append("var id=").append(JSONObject.quote(id)).append(";")
+            append("var url=").append(JSONObject.quote(API_ORIGIN + path)).append(";")
+            append("var body=").append(JSONObject.quote(bodyJson)).append(";")
+            append("try{")
+            append("fetch(url,{method:'POST',credentials:'include',")
+            append("headers:{'Content-Type':'application/json;charset=UTF-8',")
+            append("'Accept':'application/json, text/plain, */*'},")
+            append("body:body})")
+            append(".then(function(r){return r.text().then(function(t){return {s:r.status,t:t};});})")
+            append(".then(function(o){Native.onFetchDone(id,String(o.s),o.t,'');})")
+            append(".catch(function(e){Native.onFetchDone(id,'','',''+e);});")
+            append("}catch(e){Native.onFetchDone(id,'','',''+e);}")
+            append("return 'ok';})()")
+        }
+        wv.evaluateJavascript(script, null)
+        val result = withTimeoutOrNull(FETCH_TIMEOUT_MS) { deferred.await() }
+        pendingFetches.remove(id)
+        if (result == null) Log.w(TAG, "page fetch timeout: $path")
+        result
+    }
+
     /** 生成签名头；失败返回 null。 */
     suspend fun sign(path: String, bodyJson: String): SignHeaders? = withContext(Dispatchers.Main) {
         if (!pageReady) {
-            val ok = warmUp()
+            var ok = warmUp()
+            if (!ok) ok = warmUp(force = true)   // 允许一次硬重置，避免一次抖动就永久失效
             if (!ok) {
                 Log.w(TAG, "sign aborted: page not ready")
                 return@withContext null
@@ -312,13 +393,23 @@ class SignEngine(private val context: Context) {
             }
         }
 
+    fun cookie(url: String = ORIGIN): String? = CookieManager.getInstance().getCookie(url)
+
     fun readCookie(name: String): String? {
-        val all = CookieManager.getInstance().getCookie("https://www.xiaohongshu.com") ?: return null
+        val all = cookie() ?: return null
         return all.split(";").map { it.trim() }.firstOrNull { it.startsWith("$name=") }
             ?.substringAfter("=")
     }
 
     fun hasLoginSession(): Boolean = !readCookie("web_session").isNullOrEmpty()
+
+    /** 登录态变化后重置签名页，让下一次 warmUp 用新的 Cookie 重新加载。 */
+    fun invalidate() {
+        main.post {
+            pageReady = false
+            readyDeferred = CompletableDeferred()
+        }
+    }
 
     fun destroy() {
         main.post {
@@ -334,3 +425,6 @@ class SignEngine(private val context: Context) {
 }
 
 data class SignHeaders(val xs: String, val xt: String, val xSCommon: String, val a1: String)
+
+/** 页面内 fetch 的原始结果。 */
+data class PageFetch(val status: Int, val body: String)

@@ -40,23 +40,54 @@ class XhsApi(private val signEngine: SignEngine) {
 
     private val mediaType = CONTENT_TYPE.toMediaType()
 
+    /** 最近一次失败原因，供界面展示（比统一的「请确认已登录」有用得多）。 */
+    @Volatile
+    var lastError: String = ""
+        private set
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
+    /**
+     * 原样透传 WebView 里该域下的**全部** Cookie。
+     *
+     * 老实现只挑 a1/webId/web_session 等 6 个，会把 acw_tc、websectiga 这类
+     * 风控 cookie 丢掉，网关照样判异常。全量透传最接近真实浏览器。
+     */
     private fun cookieHeader(): String {
-        val parts = mutableListOf<String>()
-        for (name in listOf("a1", "webId", "web_session", "abRequestId", "gid", "customerClientId")) {
-            signEngine.readCookie(name)?.takeIf { it.isNotEmpty() }?.let { parts += "$name=$it" }
-        }
+        val raw = signEngine.cookie() ?: ""
+        val parts = raw.split(";").map { it.trim() }.filter { it.contains("=") }.toMutableList()
         if (parts.none { it.startsWith("xsecappid=") }) parts += "xsecappid=xhs-pc-web"
         if (parts.none { it.startsWith("webBuild=") }) parts += "webBuild=6.7.1"
         return parts.joinToString("; ")
     }
 
+    private fun fail(msg: String): String? {
+        lastError = msg
+        Log.w(TAG, msg)
+        return null
+    }
+
     private suspend fun postRaw(path: String, body: String, signed: Boolean): String? =
         withContext(Dispatchers.IO) {
+            lastError = ""
+
+            // ---- 路线 1：整段请求交给页面内的真实 JS 发起 ----
+            // 这样 X-s 由站点自己的拦截器补，Cookie/UA/Referer/a1 完全一致。
+            if (signed) {
+                val page = runCatching { signEngine.fetchInPage(path, body) }.getOrNull()
+                if (page != null && page.status == 200 && page.body.trimStart().startsWith("{")) {
+                    Log.d(TAG, "PAGE $path -> ${page.status} ${page.body.take(160)}")
+                    return@withContext page.body
+                }
+                if (page != null) {
+                    Log.w(TAG, "page fetch unusable: status=${page.status} body=${page.body.take(120)}")
+                }
+            }
+
+            // ---- 路线 2：原生签名 + OkHttp ----
             val builder = Request.Builder()
                 .url(BASE + path)
                 .header("User-Agent", SignEngine.USER_AGENT)
@@ -82,10 +113,14 @@ class XhsApi(private val signEngine: SignEngine) {
                 client.newCall(request).execute().use { resp ->
                     val text = resp.body?.string()
                     Log.d(TAG, "POST $path -> ${resp.code} ${text?.take(160)}")
-                    if (resp.isSuccessful) text else null
+                    if (resp.isSuccessful) {
+                        text
+                    } else {
+                        fail("请求被拒绝：HTTP ${resp.code}${text?.take(80)?.let { " · $it" } ?: ""}（$path）")
+                    }
                 }
             }.getOrElse {
-                Log.e(TAG, "POST $path failed: ${it.message}")
+                fail("网络错误：${it.message}（$path）")
                 null
             }
         }
@@ -94,9 +129,16 @@ class XhsApi(private val signEngine: SignEngine) {
         if (raw.isNullOrBlank()) return null
         return runCatching {
             val env = json.decodeFromString<ApiEnvelope<T>>(raw)
-            if (!env.success) Log.w(TAG, "api error: code=${env.code} msg=${env.msg}")
-            env.data
+            if (!env.success) {
+                lastError = "接口返回 code=${env.code} msg=${env.msg ?: ""}".trim()
+                Log.w(TAG, "api error: code=${env.code} msg=${env.msg}")
+            }
+            env.data ?: run {
+                if (lastError.isEmpty()) lastError = "接口没有返回数据（code=${env.code}）"
+                null
+            }
         }.getOrElse {
+            lastError = "解析失败：${it.message}"
             Log.e(TAG, "decode failed: ${it.message}")
             null
         }

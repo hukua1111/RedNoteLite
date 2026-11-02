@@ -53,6 +53,11 @@ fun LoginScreen(onClose: () -> Unit) {
     fun refreshLoginState() {
         val cookie = CookieManager.getInstance().getCookie("https://www.xiaohongshu.com") ?: return
         val has = cookie.split(";").any { it.trim().startsWith("web_session=") && it.substringAfter("=").isNotBlank() }
+        if (has && !loggedIn.value) {
+            // 刚登录成功：签名页要带着新 Cookie 重新加载，并通知首页重新拉流
+            app.signEngine.invalidate()
+            app.notifyAuthChanged()
+        }
         loggedIn.value = has
     }
 
@@ -122,7 +127,14 @@ fun LoginScreen(onClose: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (loggedIn.value) {
-                    Button(onClick = onClose, modifier = Modifier.weight(1f)) {
+                    Button(
+                        onClick = {
+                            app.signEngine.invalidate()
+                            app.notifyAuthChanged()
+                            onClose()
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
                         Text("已登录，继续使用")
                     }
                 } else {

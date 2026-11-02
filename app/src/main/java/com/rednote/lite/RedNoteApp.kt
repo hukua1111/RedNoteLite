@@ -1,6 +1,7 @@
 package com.rednote.lite
 
 import android.app.Application
+import androidx.compose.runtime.mutableIntStateOf
 import com.rednote.lite.data.remote.XhsApi
 import com.rednote.lite.data.sign.SignEngine
 
@@ -14,6 +15,21 @@ class RedNoteApp : Application() {
 
     lateinit var api: XhsApi
         private set
+
+    private val authVersionState = mutableIntStateOf(0)
+
+    /**
+     * 登录状态版本号。
+     *
+     * 登录页是一个独立的导航目标，登录成功返回首页时 MainScreen 并不会重组重取，
+     * 于是会停在「登录了但首页还是那屏报错」——这是最容易被误解成"没登录"的一环。
+     * 登录成功就 +1，首页把它当 LaunchedEffect 的 key，一次登录只多刷一次。
+     */
+    val authVersion: Int get() = authVersionState.intValue
+
+    fun notifyAuthChanged() {
+        authVersionState.intValue++
+    }
 
     override fun onCreate() {
         super.onCreate()

@@ -8,6 +8,9 @@ class NoteDetailViewModel {
 
     private val api = RedNoteApp.instance.api
 
+    /** 最近一次失败的真实原因，用于界面展示。 */
+    val lastError: String get() = api.lastError
+
     /** 返回 (笔记卡片, 评论列表)。 */
     suspend fun load(noteId: String, xsecToken: String): Pair<NoteDetailCard, List<Comment>>? {
         val resp = api.noteDetail(noteId, xsecToken) ?: return null

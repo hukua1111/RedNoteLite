@@ -44,6 +44,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import com.rednote.lite.RedNoteApp
 import com.rednote.lite.data.model.FeedItem
 import com.rednote.lite.ui.common.LoadState
 import com.rednote.lite.ui.common.itemsOrEmpty
@@ -53,30 +54,40 @@ fun MainScreen(
     onOpenNote: (String, String) -> Unit,
     onLogin: () -> Unit,
 ) {
-    var query by remember { mutableStateOf("") }
+    var query by remember { mutableStateOf("") }        // 输入框内容，每敲一个字都会变
+    var searchTerm by remember { mutableStateOf("") }   // 真正提交给接口的词
     var mode by remember { mutableStateOf(FeedMode.HOME) }
     var state by remember { mutableStateOf<LoadState<List<FeedItem>>>(LoadState.Idle) }
     var cursor by remember { mutableStateOf("") }
     var hasMore by remember { mutableStateOf(false) }
     var loadingMore by remember { mutableStateOf(false) }
+    var retryKey by remember { mutableStateOf(0) }
 
     val vm = remember { MainViewModel() }
     val gridState = rememberLazyGridState()
+    // 登录成功后由 LoginScreen 自增，这里作为 LaunchedEffect 的 key，触发一次重新拉流
+    val authVersion = RedNoteApp.instance.authVersion
 
     suspend fun load(reset: Boolean) {
         if (reset) {
             state = LoadState.Loading
             cursor = ""
         } else {
+            if (loadingMore) return
             loadingMore = true
         }
         val existing = state.itemsOrEmpty()
         val result = when (mode) {
             FeedMode.HOME -> vm.homeFeed(cursor)
-            FeedMode.SEARCH -> vm.search(query, cursor)
+            FeedMode.SEARCH -> vm.search(searchTerm, cursor)
         }
         if (result == null) {
-            state = if (reset) LoadState.Error("加载失败：请确认已登录并联网") else LoadState.Success(existing)
+            if (reset) {
+                // 直接展示真实原因（HTTP 码 / 业务 code），比笼统的「请确认已登录」有用
+                state = LoadState.Error(vm.lastError.ifBlank { "未知错误" })
+            } else {
+                state = LoadState.Success(existing)
+            }
         } else {
             state = LoadState.Success(if (reset) result.first else existing + result.first)
             cursor = result.second
@@ -85,14 +96,21 @@ fun MainScreen(
         loadingMore = false
     }
 
-    LaunchedEffect(mode, query) { load(reset = true) }
+    // 只在「模式 / 提交的词 / 重试 / 登录态」变化时重取，
+    // 老实现 key 里带 query，输入框每敲一个字就打一次接口
+    LaunchedEffect(mode, searchTerm, retryKey, authVersion) { load(reset = true) }
 
     LaunchedEffect(gridState) {
         snapshotFlow {
-            val last = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            last to gridState.layoutInfo.totalItemsCount
-        }.collect { (last, total) ->
-            if (hasMore && !loadingMore && total > 0 && last >= total - 4) {
+            // hasMore / loadingMore 必须在 snapshotFlow 内部读，否则取到的是首次组合时的旧值，
+            // 翻页永远不会触发
+            Triple(
+                gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0,
+                gridState.layoutInfo.totalItemsCount,
+                hasMore to loadingMore,
+            )
+        }.collect { (last, total, flags) ->
+            if (flags.first && !flags.second && total > 0 && last >= total - 4) {
                 load(reset = false)
             }
         }
@@ -109,10 +127,18 @@ fun MainScreen(
             query = query,
             onQueryChange = { query = it },
             active = mode == FeedMode.SEARCH,
-            onSubmit = { if (query.isNotBlank()) mode = FeedMode.SEARCH },
+            onSubmit = {
+                if (query.isNotBlank()) {
+                    searchTerm = query
+                    mode = FeedMode.SEARCH
+                    retryKey++
+                }
+            },
             onClear = {
                 query = ""
+                searchTerm = ""
                 mode = FeedMode.HOME
+                retryKey++
             },
             onLogin = onLogin,
         )
@@ -123,9 +149,26 @@ fun MainScreen(
             }
 
             is LoadState.Error -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(s.message, style = MaterialTheme.typography.bodyMedium)
-                    TextButton(onClick = { state = LoadState.Idle }) { Text("重试") }
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                ) {
+                    Text("内容加载失败", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        s.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(top = 8.dp),
+                    ) {
+                        // 老实现是 state = Idle，但没有任何东西会因为 Idle 去重新加载，
+                        // 点「重试」等于没反应
+                        TextButton(onClick = { retryKey++ }) { Text("重试") }
+                        TextButton(onClick = onLogin) { Text("重新登录") }
+                    }
                 }
             }
 

@@ -13,37 +13,44 @@ data class ApiEnvelope<T>(
 )
 
 // ---------------- 信息流 / 搜索 ----------------
+//
+// 注意：小红书 web 接口的字段一律是 snake_case（note_card / url_default / interact_info ...）。
+// kotlinx.serialization 默认按属性名精确匹配，所以下面每个多词字段都必须显式写 @SerialName，
+// 否则 ignoreUnknownKeys 会把它们静默丢掉，界面就会变成「有列表但全是空白卡片」。
 
 @Serializable
 data class FeedData(
     val items: List<FeedItem> = emptyList(),
     val cursor: String? = null,
     @SerialName("has_more") val hasMore: Boolean = false,
+    @SerialName("search_id") val searchId: String? = null,
 )
 
 @Serializable
 data class FeedItem(
     val id: String = "",
-    val modelType: String? = null,
-    val noteCard: NoteCard? = null,
-    val xsecToken: String? = null,
+    @SerialName("model_type") val modelType: String? = null,
+    @SerialName("note_card") val noteCard: NoteCard? = null,
+    @SerialName("xsec_token") val xsecToken: String? = null,
 )
 
 @Serializable
 data class NoteCard(
     val type: String? = null,
+    @SerialName("note_id") val noteId: String? = null,
     @SerialName("display_title") val displayTitle: String? = null,
     val title: String? = null,
+    val desc: String? = null,
     val user: UserBrief? = null,
-    val interactInfo: InteractInfo? = null,
+    @SerialName("interact_info") val interactInfo: InteractInfo? = null,
     val cover: Cover? = null,
     @SerialName("video") val video: VideoInfo? = null,
 )
 
 @Serializable
 data class Cover(
-    val urlDefault: String? = null,
-    val urlPre: String? = null,
+    @SerialName("url_default") val urlDefault: String? = null,
+    @SerialName("url_pre") val urlPre: String? = null,
     val url: String? = null,
     val width: Int = 0,
     val height: Int = 0,
@@ -60,16 +67,17 @@ data class UserBrief(
     @SerialName("user_id") val userId: String = "",
     val nickname: String = "",
     val avatar: String? = null,
-    val xsecToken: String? = null,
+    @SerialName("xsec_token") val xsecToken: String? = null,
 )
 
 @Serializable
 data class InteractInfo(
-    val likedCount: String = "0",
+    @SerialName("liked_count") val likedCount: String = "0",
     val liked: Boolean = false,
     val collected: Boolean = false,
-    val commentCount: String? = null,
-    val sharedCount: String? = null,
+    @SerialName("collected_count") val collectedCount: String? = null,
+    @SerialName("comment_count") val commentCount: String? = null,
+    @SerialName("shared_count") val sharedCount: String? = null,
 )
 
 // ---------------- 笔记详情 ----------------
@@ -83,24 +91,24 @@ data class NoteDetailResponse(
 @Serializable
 data class NoteDetailItem(
     val id: String = "",
-    val noteCard: NoteDetailCard? = null,
+    @SerialName("note_card") val noteCard: NoteDetailCard? = null,
     val comments: CommentsPage? = null,
 )
 
 @Serializable
 data class NoteDetailCard(
-    val noteId: String = "",
+    @SerialName("note_id") val noteId: String = "",
     val type: String = "normal",
     val title: String? = null,
     val desc: String? = null,
     val user: UserBrief? = null,
-    val interactInfo: InteractInfo? = null,
-    val imageList: List<NoteImage> = emptyList(),
+    @SerialName("interact_info") val interactInfo: InteractInfo? = null,
+    @SerialName("image_list") val imageList: List<NoteImage> = emptyList(),
     val video: VideoDetail? = null,
     val time: Long = 0,
-    val lastUpdateTime: Long = 0,
-    val ipLocation: String? = null,
-    @SerialName("tagList") val tags: List<NoteTag> = emptyList(),
+    @SerialName("last_update_time") val lastUpdateTime: Long = 0,
+    @SerialName("ip_location") val ipLocation: String? = null,
+    @SerialName("tag_list") val tags: List<NoteTag> = emptyList(),
 )
 
 @Serializable
@@ -126,8 +134,8 @@ data class VideoStream(
 
 @Serializable
 data class VideoCodec(
-    val masterUrl: String? = null,
-    val backupUrls: List<String> = emptyList(),
+    @SerialName("master_url") val masterUrl: String? = null,
+    @SerialName("backup_urls") val backupUrls: List<String> = emptyList(),
     val width: Int = 0,
     val height: Int = 0,
     val duration: Int = 0,
@@ -135,21 +143,24 @@ data class VideoCodec(
 )
 
 @Serializable
-data class VideoConsumer(val originVideoKey: String? = null)
+data class VideoConsumer(@SerialName("origin_video_key") val originVideoKey: String? = null)
 
 @Serializable
 data class NoteImage(
-    val urlDefault: String? = null,
-    val urlPre: String? = null,
+    @SerialName("url_default") val urlDefault: String? = null,
+    @SerialName("url_pre") val urlPre: String? = null,
     val url: String? = null,
     val width: Int = 0,
     val height: Int = 0,
-    val traceId: String? = null,
-    val infoList: List<ImageInfo> = emptyList(),
+    @SerialName("trace_id") val traceId: String? = null,
+    @SerialName("info_list") val infoList: List<ImageInfo> = emptyList(),
 )
 
 @Serializable
-data class ImageInfo(val imageScene: String? = null, val url: String? = null)
+data class ImageInfo(
+    @SerialName("image_scene") val imageScene: String? = null,
+    val url: String? = null,
+)
 
 // ---------------- 评论 ----------------
 
@@ -163,15 +174,15 @@ data class CommentsPage(
 @Serializable
 data class Comment(
     val id: String = "",
-    val noteId: String = "",
+    @SerialName("note_id") val noteId: String = "",
     val content: String = "",
-    val userInfo: UserBrief? = null,
-    val createTime: Long = 0,
-    val likeCount: String = "0",
+    @SerialName("user_info") val userInfo: UserBrief? = null,
+    @SerialName("create_time") val createTime: Long = 0,
+    @SerialName("like_count") val likeCount: String = "0",
     val liked: Boolean = false,
-    val subCommentCount: String? = null,
-    val subComments: List<Comment> = emptyList(),
-    val ipLocation: String? = null,
+    @SerialName("sub_comment_count") val subCommentCount: String? = null,
+    @SerialName("sub_comments") val subComments: List<Comment> = emptyList(),
+    @SerialName("ip_location") val ipLocation: String? = null,
 )
 
 // ---------------- 通用 ----------------
