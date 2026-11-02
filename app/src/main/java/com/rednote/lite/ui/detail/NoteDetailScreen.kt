@@ -52,6 +52,7 @@ fun NoteDetailScreen(
     noteId: String,
     xsecToken: String,
     onBack: () -> Unit,
+    onOpenLogs: () -> Unit,
 ) {
     var state by remember { mutableStateOf<LoadState<NoteDetailCard>>(LoadState.Loading) }
     var comments by remember { mutableStateOf<List<Comment>>(emptyList()) }
@@ -78,6 +79,9 @@ fun NoteDetailScreen(
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
+                },
+                actions = {
+                    TextButton(onClick = onOpenLogs) { Text("日志") }
                 },
             )
         },

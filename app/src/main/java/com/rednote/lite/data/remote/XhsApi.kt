@@ -1,11 +1,11 @@
 package com.rednote.lite.data.remote
 
-import android.util.Log
 import com.rednote.lite.data.model.ApiEnvelope
 import com.rednote.lite.data.model.CommentsPage
 import com.rednote.lite.data.model.FeedData
 import com.rednote.lite.data.model.NoteDetailResponse
 import com.rednote.lite.data.sign.SignEngine
+import com.rednote.lite.util.AppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -17,6 +17,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
@@ -68,7 +69,7 @@ class XhsApi(private val signEngine: SignEngine) {
 
     private fun fail(msg: String): String? {
         lastError = msg
-        Log.w(TAG, msg)
+        AppLog.w(TAG, msg)
         return null
     }
 
@@ -85,17 +86,21 @@ class XhsApi(private val signEngine: SignEngine) {
         signed: Boolean,
     ): String? = withContext(Dispatchers.IO) {
         lastError = ""
+        AppLog.d(TAG, "→ $method $pathWithQuery")
+        if (!body.isNullOrBlank()) AppLog.d(TAG, "  req: $body")
 
         // ---- 路线 1：整段请求交给页面内的真实 JS 发起 ----
         // 这样 X-s 由站点自己的拦截器补，Cookie/UA/Referer/a1 完全一致。
         if (signed) {
             val page = runCatching { signEngine.fetchInPage(pathWithQuery, method, body) }.getOrNull()
             if (page != null && page.status == 200 && page.body.trimStart().startsWith("{")) {
-                Log.d(TAG, "PAGE $method $pathWithQuery -> ${page.status} ${page.body.take(160)}")
+                AppLog.d(TAG, "← page HTTP ${page.status} ${page.body.length}B: ${page.body}")
                 return@withContext page.body
             }
             if (page != null) {
-                Log.w(TAG, "page fetch unusable: status=${page.status} body=${page.body.take(120)}")
+                AppLog.w(TAG, "page fetch unusable: HTTP ${page.status}: ${page.body.take(300)}")
+            } else {
+                AppLog.w(TAG, "page fetch returned null, fallback to native")
             }
         }
 
@@ -112,7 +117,7 @@ class XhsApi(private val signEngine: SignEngine) {
             // GET 的签名串是「路径 + query」，没有请求体
             val headers = signEngine.sign(pathWithQuery, body ?: "")
             if (headers == null) {
-                Log.w(TAG, "sign unavailable for $pathWithQuery; sending unsigned")
+                AppLog.w(TAG, "sign unavailable, sending unsigned")
             } else {
                 builder.header("X-s", headers.xs)
                 builder.header("X-t", headers.xt)
@@ -131,7 +136,7 @@ class XhsApi(private val signEngine: SignEngine) {
         runCatching {
             client.newCall(request).execute().use { resp ->
                 val text = resp.body?.string()
-                Log.d(TAG, "$method $pathWithQuery -> ${resp.code} ${text?.take(160)}")
+                AppLog.d(TAG, "← native HTTP ${resp.code} ${text?.length ?: 0}B: $text")
                 if (resp.isSuccessful) {
                     text
                 } else {
@@ -150,7 +155,7 @@ class XhsApi(private val signEngine: SignEngine) {
             val env = json.decodeFromString<ApiEnvelope<T>>(raw)
             if (!env.success) {
                 lastError = "接口返回 code=${env.code} msg=${env.msg ?: ""}".trim()
-                Log.w(TAG, "api error: code=${env.code} msg=${env.msg}")
+                AppLog.w(TAG, "api error: code=${env.code} msg=${env.msg}")
             }
             env.data ?: run {
                 if (lastError.isEmpty()) lastError = "接口没有返回数据（code=${env.code}）"
@@ -158,10 +163,30 @@ class XhsApi(private val signEngine: SignEngine) {
             }
         }.getOrElse {
             lastError = "解析失败：${it.message}"
-            Log.e(TAG, "decode failed: ${it.message}")
+            AppLog.e(TAG, "decode failed", it)
             null
         }
     }
+
+    /**
+     * 把响应压成「有哪些 key、多长」的摘要。
+     * 贴整段 JSON 太长，这个摘要足够判断字段名对不对、卡片是不是空的。
+     */
+    private fun summarize(raw: String): String = runCatching {
+        val root = JSONObject(raw)
+        val data = root.optJSONObject("data")
+        val item0 = data?.optJSONArray("items")?.optJSONObject(0)
+        val card = item0?.optJSONObject("note_card")
+        buildString {
+            append("code=").append(root.optInt("code"))
+            append(" msg=").append(root.optString("msg"))
+            append(" dataKeys=").append(data?.keys()?.asSequence()?.toList())
+            append(" item0Keys=").append(item0?.keys()?.asSequence()?.toList())
+            append(" cardSize=").append(card?.length() ?: 0)
+            append(" cardKeys=").append(card?.keys()?.asSequence()?.toList())
+            append(" imageList=").append(card?.optJSONArray("image_list")?.length() ?: -1)
+        }
+    }.getOrElse { "summarize failed: ${it.message}" }
 
     // ---------------- 业务接口 ----------------
 
@@ -218,14 +243,26 @@ class XhsApi(private val signEngine: SignEngine) {
                 put("xsec_source", source)
                 put("xsec_token", xsecToken)
             }.toString()
-            val resp = decodeData<NoteDetailResponse>(
-                requestRaw("/api/sns/web/v1/feed", "POST", body, signed = true)
-            )
+            val raw = requestRaw("/api/sns/web/v1/feed", "POST", body, signed = true)
+            if (!raw.isNullOrBlank()) AppLog.d(TAG, "feed[$source] ${summarize(raw)}")
+            val resp = decodeData<NoteDetailResponse>(raw)
             val card = resp?.items?.firstOrNull()?.noteCard
             val usable = card != null &&
                 (card.imageList.isNotEmpty() || !card.title.isNullOrBlank() || !card.desc.isNullOrBlank())
-            if (usable) return resp
-            Log.w(TAG, "detail empty for source=$source, note=$noteId")
+            if (usable) {
+                AppLog.d(
+                    TAG,
+                    "detail ok[$source]: images=${card?.imageList?.size} " +
+                        "title=${card?.title?.length} desc=${card?.desc?.length} " +
+                        "tags=${card?.tags?.size}",
+                )
+                return resp
+            }
+            AppLog.w(
+                TAG,
+                "detail empty[$source]: card=${card != null} " +
+                    "images=${card?.imageList?.size} title=${card?.title} desc=${card?.desc?.length}",
+            )
         }
         lastError = "笔记内容为空（xsec_token 可能已失效，请返回首页重新打开）"
         return null

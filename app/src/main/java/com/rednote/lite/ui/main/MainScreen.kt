@@ -56,6 +56,7 @@ import com.rednote.lite.ui.common.itemsOrEmpty
 fun MainScreen(
     onOpenNote: (String, String) -> Unit,
     onLogin: () -> Unit,
+    onOpenLogs: () -> Unit,
 ) {
     var query by remember { mutableStateOf("") }        // 输入框内容，每敲一个字都会变
     var searchTerm by remember { mutableStateOf("") }   // 真正提交给接口的词
@@ -177,6 +178,7 @@ fun MainScreen(
                         // 点「重试」等于没反应
                         TextButton(onClick = { retryKey++ }) { Text("重试") }
                         TextButton(onClick = onLogin) { Text("重新登录") }
+                        TextButton(onClick = onOpenLogs) { Text("查看日志") }
                     }
                 }
             }

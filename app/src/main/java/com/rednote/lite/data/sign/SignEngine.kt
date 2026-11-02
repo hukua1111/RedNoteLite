@@ -10,7 +10,10 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.content.Context
+import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
+import android.webkit.WebChromeClient
+import com.rednote.lite.util.AppLog
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -236,6 +239,15 @@ class SignEngine(private val context: Context) {
                 request: WebResourceRequest?,
             ): Boolean = false
         }
+        // 页面里的 JS 报错是排查签名/取数问题最直接的线索，全部转进 AppLog
+        wv.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(m: ConsoleMessage?): Boolean {
+                if (m != null) {
+                    AppLog.d(TAG, "js: ${m.message()} (${m.sourceId()}:${m.lineNumber()})")
+                }
+                return true
+            }
+        }
         // 必须附着到窗口（1x1 不可见），否则部分机型不执行 JS
         try {
             val wm = context.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
@@ -295,9 +307,12 @@ class SignEngine(private val context: Context) {
             readyDeferred = CompletableDeferred()
         }
         if (!readyDeferred.isCompleted) {
+            AppLog.d(TAG, "warmUp: load $HOME_URL")
             wv.loadUrl(HOME_URL)
         }
-        withTimeoutOrNull(READY_TIMEOUT_MS) { readyDeferred.await() } ?: pageReady
+        val ok = withTimeoutOrNull(READY_TIMEOUT_MS) { readyDeferred.await() } ?: pageReady
+        AppLog.d(TAG, "warmUp done ok=$ok pageReady=$pageReady")
+        ok
     }
 
     /**
@@ -340,7 +355,11 @@ class SignEngine(private val context: Context) {
         wv.evaluateJavascript(script, null)
         val result = withTimeoutOrNull(FETCH_TIMEOUT_MS) { deferred.await() }
         pendingFetches.remove(id)
-        if (result == null) Log.w(TAG, "page fetch timeout: $path")
+        if (result == null) {
+            AppLog.w(TAG, "page fetch timeout: $method $path")
+        } else {
+            AppLog.d(TAG, "page fetch $method $path -> HTTP ${result.status} ${result.body.length}B")
+        }
         result
     }
 
@@ -374,11 +393,12 @@ class SignEngine(private val context: Context) {
             ?: return@withContext null
         val obj = runCatching { JSONObject(outer) }.getOrNull() ?: return@withContext null
         if (obj.optString("error").isNotEmpty()) {
-            Log.d(TAG, "readUserInfo: ${obj.optString("error")}")
+            AppLog.d(TAG, "readUserInfo: ${obj.optString("error")}")
             return@withContext null
         }
         val nickname = obj.optString("nickname")
         val avatar = obj.optString("avatar")
+        AppLog.d(TAG, "readUserInfo nickname=${nickname.length} avatar=${avatar.length}")
         if (nickname.isEmpty() && avatar.isEmpty()) return@withContext null
         UserProfile(nickname = nickname, avatar = avatar)
     }

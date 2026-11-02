@@ -8,6 +8,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import com.rednote.lite.ui.detail.NoteDetailScreen
 import com.rednote.lite.ui.login.LoginScreen
+import com.rednote.lite.ui.log.LogScreen
 import com.rednote.lite.ui.main.MainScreen
 import android.net.Uri
 
@@ -15,6 +16,7 @@ object Routes {
     const val MAIN = "main"
     const val LOGIN = "login"
     const val DETAIL = "detail"
+    const val LOGS = "logs"
 }
 
 @Composable
@@ -28,10 +30,14 @@ fun AppNavHost(navController: NavHostController) {
                     navController.navigate("${Routes.DETAIL}/${Uri.encode(noteId)}?token=$token")
                 },
                 onLogin = { navController.navigate(Routes.LOGIN) },
+                onOpenLogs = { navController.navigate(Routes.LOGS) },
             )
         }
         composable(Routes.LOGIN) {
             LoginScreen(onClose = { navController.popBackStack() })
+        }
+        composable(Routes.LOGS) {
+            LogScreen(onBack = { navController.popBackStack() })
         }
         composable(
             route = "${Routes.DETAIL}/{noteId}?token={token}",
@@ -44,6 +50,7 @@ fun AppNavHost(navController: NavHostController) {
                 noteId = entry.arguments?.getString("noteId").orEmpty(),
                 xsecToken = entry.arguments?.getString("token").orEmpty(),
                 onBack = { navController.popBackStack() },
+                onOpenLogs = { navController.navigate(Routes.LOGS) },
             )
         }
     }
