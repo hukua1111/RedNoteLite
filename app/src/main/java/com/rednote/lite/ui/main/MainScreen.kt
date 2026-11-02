@@ -305,13 +305,6 @@ private fun FilterDialog(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
-                Text(
-                    "三个条件是「或」：命中任意一条就隐藏。只对已加载的笔记生效，" +
-                        "不重新请求；首页接口没有返回评论数时该条不参与判断。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
             }
         },
         confirmButton = {

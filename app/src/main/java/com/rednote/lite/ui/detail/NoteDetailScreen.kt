@@ -1,10 +1,11 @@
 package com.rednote.lite.ui.detail
 
 import android.net.Uri
-import android.widget.MediaController
+import android.os.Build
 import android.widget.VideoView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,6 +32,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -40,12 +42,15 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -58,6 +63,8 @@ import com.rednote.lite.data.model.Comment
 import com.rednote.lite.data.model.NoteDetailCard
 import com.rednote.lite.ui.common.LoadState
 import com.rednote.lite.util.toHttpsUrl
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -306,35 +313,156 @@ private fun NoteContent(
 /**
  * 视频笔记的播放器。
  *
- * 直接用系统的 VideoView：视频是 mp4 直链，不需要额外依赖，
- * 比起为了播放引一整套 ExoPlayer 更轻。
+ * 用系统 VideoView + 自绘控件：进度条可拖动、单击暂停/播放、长按右半屏 2 倍速。
+ * 视频是 mp4 直链，没必要为此引一整套 ExoPlayer。
  */
 @Composable
 private fun VideoPlayer(url: String) {
-    var player by remember { mutableStateOf<VideoView?>(null) }
+    var videoView by remember { mutableStateOf<VideoView?>(null) }
+    var isPlaying by remember { mutableStateOf(false) }
+    var durationMs by remember { mutableIntStateOf(0) }
+    var positionMs by remember { mutableIntStateOf(0) }
+    var dragging by remember { mutableStateOf(false) }
+    var boosting by remember { mutableStateOf(false) }
+    var suppressTap by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
     DisposableEffect(url) {
         onDispose {
-            runCatching { player?.stopPlayback() }
-            player = null
+            runCatching { videoView?.stopPlayback() }
+            videoView = null
         }
     }
-    key(url) {
-        AndroidView(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(420.dp)
-                .background(Color.Black),
-            factory = { ctx ->
-                VideoView(ctx).apply {
-                    setMediaController(MediaController(ctx).also { it.setAnchorView(this) })
-                    setVideoURI(Uri.parse(url))
-                    setOnPreparedListener { mp ->
-                        mp.isLooping = true
-                        start()
-                    }
-                    player = this
+
+    // 进度轮询（拖动时不覆盖用户的位置）
+    LaunchedEffect(url) {
+        while (true) {
+            val vv = videoView
+            if (vv != null) {
+                runCatching {
+                    if (vv.duration > 0) durationMs = vv.duration
+                    if (!dragging && vv.isPlaying) positionMs = vv.currentPosition
+                    isPlaying = vv.isPlaying
                 }
-            },
-        )
+            }
+            delay(250)
+        }
     }
+
+    fun togglePlay() {
+        val vv = videoView ?: return
+        runCatching {
+            if (vv.isPlaying) vv.pause() else vv.start()
+            isPlaying = vv.isPlaying
+        }
+    }
+
+    fun setSpeed(speed: Float) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val vv = videoView ?: return
+        runCatching { vv.setPlaybackParams(vv.playbackParams.setSpeed(speed)) }
+    }
+
+    Box(Modifier.fillMaxWidth().height(420.dp).background(Color.Black)) {
+        key(url) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    VideoView(ctx).apply {
+                        setVideoURI(Uri.parse(url))
+                        setOnPreparedListener { mp ->
+                            mp.isLooping = true
+                            durationMs = mp.duration
+                            start()
+                        }
+                        setOnCompletionListener { isPlaying = false }
+                        videoView = this
+                    }
+                },
+            )
+        }
+
+        // 手势层：单击播放/暂停，长按右半屏加速（松手恢复）
+        Box(
+            Modifier
+                .fillMaxSize()
+                .pointerInput(url) {
+                    detectTapGestures(
+                        onTap = {
+                            if (suppressTap) suppressTap = false else togglePlay()
+                        },
+                        onPress = { offset ->
+                            suppressTap = false
+                            val onRight = offset.x > size.width * 0.55f
+                            var boosted = false
+                            val job = if (onRight) {
+                                scope.launch {
+                                    delay(350)
+                                    boosted = true
+                                    suppressTap = true
+                                    boosting = true
+                                    setSpeed(2f)
+                                }
+                            } else {
+                                null
+                            }
+                            tryAwaitRelease()
+                            job?.cancel()
+                            if (boosted) {
+                                boosting = false
+                                setSpeed(1f)
+                            }
+                        },
+                    )
+                },
+        )
+
+        Column(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(Color.Black.copy(alpha = 0.45f))
+                .padding(horizontal = 12.dp, vertical = 2.dp),
+        ) {
+            Slider(
+                value = positionMs.toFloat(),
+                onValueChange = { value ->
+                    dragging = true
+                    positionMs = value.toInt()
+                },
+                onValueChangeFinished = {
+                    runCatching { videoView?.seekTo(positionMs) }
+                    dragging = false
+                },
+                valueRange = 0f..(if (durationMs > 0) durationMs.toFloat() else 1f),
+            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    formatDuration(positionMs),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                Text(
+                    " / ${formatDuration(durationMs)}",
+                    color = Color.White.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.weight(1f),
+                )
+                if (boosting) {
+                    Text("2×", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                } else {
+                    Text(
+                        if (isPlaying) "暂停" else "播放",
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun formatDuration(ms: Int): String {
+    val total = (ms / 1000).coerceAtLeast(0)
+    return "%d:%02d".format(total / 60, total % 60)
 }

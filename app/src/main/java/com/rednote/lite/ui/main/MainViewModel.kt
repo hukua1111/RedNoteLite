@@ -1,5 +1,6 @@
 package com.rednote.lite.ui.main
 
+import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -22,6 +23,30 @@ data class FeedFilter(
     val minComments: Int = 0,
 ) {
     val active: Boolean get() = keyword.isNotBlank() || minLikes > 0 || minComments > 0
+
+    /**
+     * 命中任意一条就隐藏。
+     *
+     * 点赞：**缺失按 0 算**。有些卡片根本没有 interact_info，界面也是显示 0，
+     * 这种必须能被屏蔽，否则「点赞为 0 的屏蔽不掉」。
+     * 评论：首页接口不返回 comment_count，缺失时这条不参与判断，
+     * 否则一填阈值就会把整页清空。
+     */
+    fun blocks(item: FeedItem): Boolean {
+        if (!active) return false
+        val card = item.noteCard
+        val info = card?.interactInfo
+        val text = listOfNotNull(card?.displayTitle, card?.title, card?.desc).joinToString(" ")
+        val kw = keyword.trim()
+
+        val byKeyword = kw.isNotEmpty() && text.contains(kw, ignoreCase = true)
+        val byLikes = minLikes > 0 && parseCount(info?.likedCount) < minLikes
+        val commentRaw = info?.commentCount
+        val byComments = minComments > 0 && !commentRaw.isNullOrBlank() &&
+            parseCount(commentRaw) < minComments
+
+        return byKeyword || byLikes || byComments
+    }
 
     companion object {
         /** "1.2万" / "2750" / "" → 数值 */
@@ -48,6 +73,12 @@ class MainViewModel : ViewModel() {
     companion object {
         /** 下拉刷新时一次最多插入多少条新内容。 */
         private const val REFRESH_BATCH = 10
+        /** 为了凑够新内容，一次刷新最多请求几页。 */
+        private const val MAX_REFRESH_FETCH = 2
+
+        private const val KEY_KEYWORD = "keyword"
+        private const val KEY_LIKES = "min_likes"
+        private const val KEY_COMMENTS = "min_comments"
     }
 
     private val api = RedNoteApp.instance.api
@@ -72,12 +103,25 @@ class MainViewModel : ViewModel() {
     /** 最近一次失败的真实原因（HTTP 码 / 业务 code），用于界面展示。 */
     val lastError: String get() = api.lastError
 
-    /** 本地筛选条件。 */
-    var filter by mutableStateOf(FeedFilter())
+    /** 筛选条件持久化，重启 App 不会丢。 */
+    private val prefs = RedNoteApp.instance.getSharedPreferences("rednote_filter", Context.MODE_PRIVATE)
+
+    var filter by mutableStateOf(
+        FeedFilter(
+            keyword = prefs.getString(KEY_KEYWORD, "").orEmpty(),
+            minLikes = prefs.getInt(KEY_LIKES, 0),
+            minComments = prefs.getInt(KEY_COMMENTS, 0),
+        ),
+    )
         private set
 
     fun updateFilter(value: FeedFilter) {
         filter = value
+        prefs.edit()
+            .putString(KEY_KEYWORD, value.keyword)
+            .putInt(KEY_LIKES, value.minLikes)
+            .putInt(KEY_COMMENTS, value.minComments)
+            .apply()
     }
 
     /**
@@ -86,30 +130,9 @@ class MainViewModel : ViewModel() {
      * 三个条件是「或」的关系，命中任意一条就把这条笔记隐藏：
      *  - 关键词：命中就隐藏（关键词是用来排除的，不是用来筛出来的）
      *  - 点赞 / 评论：少于阈值就隐藏
-     *
-     * 注意评论数在首页接口里经常缺失（interact_info 只有 liked_count），
-     * 缺失时**不参与判断**，否则一填阈值就会把整个列表清空。
      */
     val visibleItems: List<FeedItem>
-        get() {
-            val f = filter
-            if (!f.active) return items
-            val keyword = f.keyword.trim()
-            return items.filterNot { item ->
-                val card = item.noteCard
-                val text = listOfNotNull(card?.displayTitle, card?.title, card?.desc)
-                    .joinToString(" ")
-                val likedRaw = card?.interactInfo?.likedCount
-                val commentRaw = card?.interactInfo?.commentCount
-
-                val byKeyword = keyword.isNotEmpty() && text.contains(keyword, ignoreCase = true)
-                val byLikes = f.minLikes > 0 && !likedRaw.isNullOrBlank() &&
-                    FeedFilter.parseCount(likedRaw) < f.minLikes
-                val byComments = f.minComments > 0 && !commentRaw.isNullOrBlank() &&
-                    FeedFilter.parseCount(commentRaw) < f.minComments
-                byKeyword || byLikes || byComments
-            }
-        }
+        get() = if (!filter.active) items else items.filterNot { filter.blocks(it) }
 
     private var cursor = ""
     /** 上次是按哪组条件加载的，用来跳过「返回详情页」这种无意义重取。 */
@@ -147,22 +170,39 @@ class MainViewModel : ViewModel() {
         loading = false
     }
 
-    /** 下拉刷新：首页只把新内容插到最前面，原有内容原样留在后面。 */
+    /**
+     * 下拉刷新。
+     *
+     * 首页：取回的新内容插到最前面，最多 10 条。筛选开着时，被屏蔽的条目直接跳过
+     * 并继续往后翻页补齐，最多请求 [MAX_REFRESH_FETCH] 页；仍不足 10 条就按实际
+     * 数量插入，不再继续请求。
+     */
     suspend fun refresh() {
         if (refreshing) return
         refreshing = true
         if (mode == FeedMode.HOME && items.isNotEmpty()) {
-            // 首页：取回第一页，挑出列表里还没有的条目，最多插 10 条
-            val result = api.homeFeed("")
-            if (result == null) {
-                error = lastError.ifBlank { "未知错误" }
-            } else {
-                val existing = items.mapTo(HashSet()) { it.id }
-                val fresh = result.items.filterNot { it.id in existing }.take(REFRESH_BATCH)
-                if (fresh.isNotEmpty()) items = fresh + items
-                error = null
-                // 不动 cursor / hasMore：翻页仍从原来的位置继续
+            val existing = items.mapTo(HashSet()) { it.id }
+            val collected = mutableListOf<FeedItem>()
+            var nextCursor = ""
+            var attempts = 0
+            while (collected.size < REFRESH_BATCH && attempts < MAX_REFRESH_FETCH) {
+                attempts++
+                val page = api.homeFeed(nextCursor) ?: break
+                page.items
+                    .filterNot { it.id in existing }
+                    .filterNot { filter.blocks(it) }
+                    .forEach { collected += it }
+                page.items.forEach { existing += it.id }
+                nextCursor = page.cursor ?: ""
+                if (nextCursor.isEmpty()) break
             }
+            if (collected.isNotEmpty()) {
+                items = collected.take(REFRESH_BATCH) + items
+                error = null
+            } else {
+                AppLog.d("MainViewModel", "refresh: 没有可插入的新内容")
+            }
+            // 不动 cursor / hasMore：翻页仍从原来的位置继续
         } else {
             cursor = ""
             val result = fetch("")
